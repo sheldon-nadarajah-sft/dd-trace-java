@@ -1,0 +1,34 @@
+// Standalone module: validates that MASS staging correctly handles Gradle's
+// HEAD probe before GET for artifact downloads (pull-through cache validation).
+// DO NOT MERGE — staging validation only.
+
+repositories {
+  ivy {
+    url = 'https://mass-read.us1.staging.dog/internal/artifact/dlcdn.apache.org'
+    patternLayout {
+      artifact '/[organisation]/[module]/v[revision]/bin/apache-[organisation]-[revision].[ext]'
+    }
+    metadataSources {
+      it.artifact()
+    }
+  }
+}
+
+configurations {
+  massArtifact {
+    canBeResolved = true
+  }
+}
+
+dependencies {
+  massArtifact 'tomcat:tomcat-9:9.0.117@zip'
+}
+
+tasks.register('validateMassPullThrough') {
+  group = 'verification'
+  description = 'Validates MASS staging HEAD support by downloading an artifact through the pull-through cache.'
+  inputs.files(configurations.massArtifact)
+  doLast {
+    println "MASS pull-through validated — downloaded: ${configurations.massArtifact.files*.name.join(', ')}"
+  }
+}

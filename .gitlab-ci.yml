@@ -1196,3 +1196,20 @@ update_central_configurations_version_range_v2:
     LANGUAGE_NAME: "java"
     MULTIPLE_RELEASE_LINES: "false"
     SEND_ALIASES: "true"
+
+# DO NOT MERGE — validates that MASS staging returns 200 for Gradle HEAD probes
+# before artifact downloads (pull-through cache validation).
+validate-mass-staging-pull-through:
+  image: ${BUILDER_IMAGE_REPO}:${BUILDER_IMAGE_VERSION_PREFIX}base
+  stage: tests
+  tags: ["arch:amd64"]
+  needs: []
+  when: manual
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - mkdir -p .gradle
+    - export GRADLE_USER_HOME=$(pwd)/.gradle
+    - sed -i "/^distributionUrl=/ s|services.gradle.org|mass-read.us1.staging.dog/internal/artifact/services.gradle.org|" gradle/wrapper/gradle-wrapper.properties
+  script:
+    - ./gradlew --project-dir mass-staging-validation --no-daemon --stacktrace validateMassPullThrough
