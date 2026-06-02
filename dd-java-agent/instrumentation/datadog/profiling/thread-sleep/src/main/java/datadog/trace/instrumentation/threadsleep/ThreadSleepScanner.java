@@ -22,7 +22,7 @@ import net.bytebuddy.utility.OpenedClassReader;
  * <p>Fails open (returns {@code true}) on any error so the transformation still runs when bytes
  * cannot be read — preserving the pre-change safety guarantee.
  */
-final class ThreadSleepScanner {
+public final class ThreadSleepScanner {
 
   private static final String SLEEP_NAME = "sleep";
 
@@ -33,7 +33,7 @@ final class ThreadSleepScanner {
    * {@code Thread.sleep} or {@code TimeUnit.sleep} call site, {@code false} if it provably does
    * not.
    */
-  static boolean containsThreadSleepCallSite(
+  public static boolean containsThreadSleepCallSite(
       ClassLoader classLoader, TypeDescription typeDescription) {
     if (classLoader == null) {
       // Bootstrap classloader — type matcher already excludes java.* but guard defensively.

@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.jar.asm.ClassReader;
 import net.bytebuddy.jar.asm.ClassWriter;
@@ -15,6 +17,15 @@ import net.bytebuddy.jar.asm.Opcodes;
 import org.junit.jupiter.api.Test;
 
 class ThreadSleepScannerTest {
+
+  @Test
+  void instrumentationEntrypoint_isPublicForAgentClassloaderAccess() throws NoSuchMethodException {
+    assertTrue(Modifier.isPublic(ThreadSleepScanner.class.getModifiers()));
+    Method method =
+        ThreadSleepScanner.class.getDeclaredMethod(
+            "containsThreadSleepCallSite", ClassLoader.class, TypeDescription.class);
+    assertTrue(Modifier.isPublic(method.getModifiers()));
+  }
 
   // ---------------------------------------------------------------------------------
   // Positive cases: scan() must return true
