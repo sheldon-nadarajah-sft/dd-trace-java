@@ -91,6 +91,7 @@ public final class ProfilingConfig {
   public static final String PROFILING_DATADOG_PROFILER_SCRATCH = "profiling.ddprof.scratch";
 
   public static final String PROFILING_DATADOG_PROFILER_LIBPATH = "profiling.ddprof.debug.lib";
+
   public static final String PROFILING_DATADOG_PROFILER_ALLOC_ENABLED =
       "profiling.ddprof.alloc.enabled";
   public static final String PROFILING_DATADOG_PROFILER_ALLOC_INTERVAL =
@@ -118,6 +119,15 @@ public final class ProfilingConfig {
   public static final String PROFILING_DATADOG_PROFILER_WALL_CONTEXT_FILTER =
       "profiling.ddprof.wall.context.filter";
   public static final boolean PROFILING_DATADOG_PROFILER_WALL_CONTEXT_FILTER_DEFAULT = true;
+
+  public static final String PROFILING_DATADOG_PROFILER_WALL_PRECHECK =
+      "profiling.ddprof.wall.precheck";
+  public static final boolean PROFILING_DATADOG_PROFILER_WALL_PRECHECK_DEFAULT = false;
+
+  public static final String PROFILING_DATADOG_PROFILER_WALL_THREADS_PER_TICK =
+      "profiling.ddprof.wall.threads.per.tick";
+  // 0 means omit the parameter and let the native profiler use its built-in default (16).
+  public static final int PROFILING_DATADOG_PROFILER_WALL_THREADS_PER_TICK_DEFAULT = 0;
 
   public static final String PROFILING_DATADOG_PROFILER_SCHEDULING_EVENT =
       "profiling.experimental.ddprof.scheduling.event";

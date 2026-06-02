@@ -4,16 +4,17 @@ import com.datadoghq.profiler.JVMAccess;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.OTelContext;
 import datadog.trace.api.config.ProfilingConfig;
+import datadog.trace.api.profiling.TaskBlockInstrumentationConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.util.TempLocationManager;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * A wrapper around unified loading of the Datadog profiler and JVM access. It exposes {@linkplain
@@ -23,8 +24,6 @@ import org.slf4j.LoggerFactory;
  * constructed, if that's the case.
  */
 public final class DdprofLibraryLoader {
-  private static final Logger log = LoggerFactory.getLogger(DdprofLibraryLoader.class.getName());
-
   public abstract static class ComponentHolder<T> {
     private volatile boolean loaded = false;
 
@@ -129,10 +128,13 @@ public final class DdprofLibraryLoader {
     try {
       ConfigProvider configProvider = ConfigProvider.getInstance();
       String scratch = getScratchDir(configProvider);
+      boolean wallPrecheck = TaskBlockInstrumentationConfig.isWallPrecheckEnabled(configProvider);
       profiler =
-          JavaProfiler.getInstance(
+          createJavaProfiler(
               configProvider.getString(ProfilingConfig.PROFILING_DATADOG_PROFILER_LIBPATH),
-              scratch);
+              scratch,
+              false,
+              wallPrecheck);
       // sanity test - force load Datadog profiler to catch it not being available early
       profiler.execute("status");
     } catch (Throwable t) {
@@ -140,6 +142,31 @@ public final class DdprofLibraryLoader {
       profiler = null;
     }
     return new JavaProfilerHolder(profiler, reasonNotLoaded);
+  }
+
+  private static JavaProfiler createJavaProfiler(
+      String libPath, String scratch, boolean delegateMonitorEvents, boolean wallPrecheck)
+      throws Exception {
+    try {
+      Method getInstance =
+          JavaProfiler.class.getMethod(
+              "getInstance", String.class, String.class, boolean.class, boolean.class);
+      return (JavaProfiler)
+          getInstance.invoke(null, libPath, scratch, delegateMonitorEvents, wallPrecheck);
+    } catch (InvocationTargetException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof Error) {
+        throw (Error) cause;
+      }
+      if (cause instanceof Exception) {
+        throw (Exception) cause;
+      }
+      throw e;
+    } catch (NoSuchMethodException ignored) {
+      // Older ddprof artifacts do not support the explicit wallprecheck init flag. Keep the agent
+      // buildable and fall back to the legacy constructor.
+      return JavaProfiler.getInstance(libPath, scratch);
+    }
   }
 
   private static JVMAccessHolder initJVMAccess() {

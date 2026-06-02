@@ -72,8 +72,66 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   }
 
   @Override
+  public int encode(CharSequence constant) {
+    return DDPROF.encode(constant);
+  }
+
+  @Override
+  public int encodeOperationName(CharSequence constant) {
+    if (SPAN_NAME_INDEX >= 0) {
+      return DDPROF.encode(constant);
+    }
+    return 0;
+  }
+
+  @Override
+  public int encodeResourceName(CharSequence constant) {
+    if (RESOURCE_NAME_INDEX >= 0) {
+      return DDPROF.encode(constant);
+    }
+    return 0;
+  }
+
+  @Override
   public String name() {
     return "ddprof";
+  }
+
+  @Override
+  public long getCurrentTicks() {
+    return DDPROF.getCurrentTicks();
+  }
+
+  @Override
+  public long blockEnter(int state) {
+    return DDPROF.blockEnter(state);
+  }
+
+  @Override
+  public void blockExit(long token) {
+    DDPROF.blockExit(token);
+  }
+
+  @Override
+  public void recordTaskBlock(long startTicks, long blocker, long unblockingSpanId) {
+    DDPROF.recordTaskBlockEvent(startTicks, blocker, unblockingSpanId);
+  }
+
+  @Override
+  public void recordTaskBlockWithContext(
+      long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+    DDPROF.recordTaskBlockWithContextEvent(
+        startTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+  }
+
+  @Override
+  public void parkEnter() {
+    DDPROF.parkEnter();
+  }
+
+  @Override
+  public void parkExit(long blocker, long unblockingSpanId) {
+    DDPROF.parkExit(blocker, unblockingSpanId);
   }
 
   public void clearContext() {
