@@ -7,8 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -148,7 +150,8 @@ class TaskBlockHelperTest {
 
     verify(profiling).recordTaskBlockWithContext(START_TICKS, BLOCKER, 0L, SPAN_ID, ROOT_SPAN_ID);
     verify(profiling, never())
-        .enqueueTaskBlock(anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+        .enqueueTaskBlock(
+            anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyInt());
     verify(profiling, never()).blockEnter(anyInt());
   }
 
@@ -203,7 +206,8 @@ class TaskBlockHelperTest {
 
     verify(profiling).blockExit(BLOCK_TOKEN);
     verify(profiling, never())
-        .enqueueTaskBlock(anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+        .enqueueTaskBlock(
+            anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyInt());
   }
 
   @Test
@@ -241,7 +245,22 @@ class TaskBlockHelperTest {
 
   @Test
   void finish_enqueuesDeferredTaskBlockWithEntrySpanRootOnlyContext() {
+    long anchorSampleId = 101L;
+    long suppressedSampleCount = 3L;
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    doAnswer(
+            invocation -> {
+              long[] snapshot = invocation.getArgument(1);
+              snapshot[ProfilingContextIntegration.TASK_BLOCK_SUPPRESSION_ANCHOR_SAMPLE_ID] =
+                  anchorSampleId;
+              snapshot[ProfilingContextIntegration.TASK_BLOCK_SUPPRESSION_SUPPRESSED_COUNT] =
+                  suppressedSampleCount;
+              snapshot[ProfilingContextIntegration.TASK_BLOCK_SUPPRESSION_OBSERVED_STATE] =
+                  ProfilingContextIntegration.BLOCKING_STATE_SLEEPING;
+              return null;
+            })
+        .when(profiling)
+        .blockExit(eq(BLOCK_TOKEN), any(long[].class));
     TaskBlockHelper.State state =
         new TaskBlockHelper.State(
             profiling,
@@ -256,8 +275,16 @@ class TaskBlockHelperTest {
     TaskBlockHelper.finish(state);
 
     verify(profiling)
-        .enqueueTaskBlock(eq(START_TICKS), anyLong(), eq(BLOCKER), eq(SPAN_ID), eq(ROOT_SPAN_ID));
-    verify(profiling).blockExit(BLOCK_TOKEN);
+        .enqueueTaskBlock(
+            eq(START_TICKS),
+            anyLong(),
+            eq(BLOCKER),
+            eq(SPAN_ID),
+            eq(ROOT_SPAN_ID),
+            eq(anchorSampleId),
+            eq(suppressedSampleCount),
+            eq(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING));
+    verify(profiling).blockExit(eq(BLOCK_TOKEN), any(long[].class));
   }
 
   @Test
