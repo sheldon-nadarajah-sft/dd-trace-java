@@ -6,6 +6,9 @@ import datadog.trace.api.Stateful;
 import datadog.trace.api.profiling.*;
 
 public interface ProfilingContextIntegration extends Profiling, EndpointCheckpointer, Timer {
+  /** Native {@code OSThreadState::SLEEPING}; used for span-scoped Thread.sleep precheck state. */
+  int BLOCKING_STATE_SLEEPING = 7;
+
   /**
    * invoked when the profiler is started, implementations must not initialise JFR before this is
    * called.
@@ -40,16 +43,89 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
   }
 
   /**
-   * Variant of TaskBlock recording for virtual threads, where carrier-thread TLS cannot be trusted
-   * between park entry and park exit.
+   * Emits a TaskBlock event covering a blocking interval on the current thread. Span context is
+   * captured natively from the OTEP TLS sidecar at JNI entry, matching the {@code recordQueueTime}
+   * convention.
+   *
+   * @param startTicks TSC tick at block entry
+   * @param blocker identity hash code of the blocking object, or 0 if none
+   * @param unblockingSpanId the span ID of the thread that unblocked this thread, or 0 if unknown
+   */
+  default void recordTaskBlock(long startTicks, long blocker, long unblockingSpanId) {}
+
+  /**
+   * Variant of {@link #recordTaskBlock} for virtual threads.
+   *
+   * <p>Virtual threads are multiplexed on OS carrier threads; the native OTEP TLS sidecar is
+   * carrier-scoped and cannot be trusted between capture (block entry) and emit (block exit). Java
+   * call sites that detect a virtual thread must capture span/root ids at block entry and pass them
+   * here explicitly so the native deferred-capture path can use them instead of the TLS sidecar.
+   * This virtual-thread path intentionally carries span/root ids only, not custom profiling context
+   * attributes.
+   *
+   * @param startTicks TSC tick captured at block entry
+   * @param blocker identity hash code of the blocking object, or 0 if none
+   * @param unblockingSpanId the span ID of the thread that unblocked this thread, or 0 if unknown
+   * @param spanId span ID captured at block-entry time
+   * @param rootSpanId root span ID captured at block-entry time
    */
   default void recordTaskBlockWithContext(
       long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {}
 
-  /** Called when the current thread is about to enter {@code LockSupport.park*}. */
+  /**
+   * Returns the OS-level native thread ID for the calling thread, or {@code -1} if unavailable.
+   * Implementations may pre-cache this value in thread-local storage on {@link #onAttach()} to
+   * avoid repeated JNI round-trips on the hot path.
+   */
+  default int getCurrentThreadId() {
+    return -1;
+  }
+
+  /**
+   * Marks the current platform thread as entering a span-scoped blocking interval that may be used
+   * by the native wall-clock timer to skip later signals after the first MethodSample in the run.
+   *
+   * @return an opaque token to pass to {@link #blockExit(long)}, or {@code 0} when no native state
+   *     was armed
+   */
+  default long blockEnter(int state) {
+    return 0L;
+  }
+
+  /** Clears a native blocked interval previously armed by {@link #blockEnter(int)}. */
+  default void blockExit(long token) {}
+
+  /**
+   * Enqueues a TaskBlock interval for asynchronous recording off the critical request path. The
+   * actual JFR write is performed by a background drain thread; the calling thread only pays the
+   * cost of a non-blocking queue offer.
+   *
+   * <p>Called from the {@code Thread.sleep} instrumentation finish path for platform threads. Other
+   * paths use the synchronous {@link #recordTaskBlock} / {@link #recordTaskBlockWithContext}
+   * methods instead.
+   *
+   * @param startTicks TSC tick captured at sleep entry
+   * @param durationNanos wall-clock duration of the sleep in nanoseconds
+   * @param blocker identity hash of the blocking object, or 0 for sleeps
+   * @param spanId span ID captured at sleep entry
+   * @param rootSpanId root span ID captured at sleep entry
+   */
+  default void enqueueTaskBlock(
+      long startTicks, long durationNanos, long blocker, long spanId, long rootSpanId) {}
+
+  /**
+   * Called when the current thread is about to enter {@code LockSupport.park*}. The native profiler
+   * snapshots the OTEP TLS span context, records the start tick for {@code datadog.TaskBlock}
+   * emission on unpark, and arms native blocked-run state for wall-clock pre-send suppression after
+   * the first MethodSample in the park run. When {@code wallprecheck} is disabled (the default),
+   * wall-clock signals are still delivered to parked threads.
+   */
   default void parkEnter() {}
 
-  /** Called when the current thread has returned from {@code LockSupport.park*}. */
+  /**
+   * Called when the current thread has returned from {@code LockSupport.park*}. Clears the park
+   * state and may emit a TaskBlock JFR event.
+   */
   default void parkExit(long blocker, long unblockingSpanId) {}
 
   String name();

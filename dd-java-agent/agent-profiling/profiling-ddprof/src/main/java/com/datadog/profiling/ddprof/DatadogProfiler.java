@@ -263,7 +263,7 @@ public final class DatadogProfiler {
     }
     this.taskBlockBridge = new TaskBlockBridge(profiler);
     if (TaskBlockInstrumentationConfig.isWallPrecheckEnabled(configProvider)
-        && !taskBlockBridge.hasTaskBlockEventSupport()) {
+        && !taskBlockBridge.hasTaskBlockFromContextSupport()) {
       log.debug(
           "TaskBlock profiling bridge methods are unavailable in the loaded ddprof artifact; "
               + "Java-level TaskBlock events will be skipped.");
@@ -500,6 +500,12 @@ public final class DatadogProfiler {
   /** Monotonic tick count for TaskBlock and wall-clock off-CPU interval timing. */
   public long getCurrentTicks() {
     return profiler.getCurrentTicks();
+  }
+
+  int encode(CharSequence constant) {
+    // java-profiler ContextSetter no longer exposes value encoding.
+    // Keep API contract by returning "not encoded" (0), which callers already handle.
+    return 0;
   }
 
   public int operationNameOffset() {
@@ -777,12 +783,62 @@ public final class DatadogProfiler {
     }
   }
 
+  public int getCurrentThreadId() {
+    return profiler != null ? taskBlockBridge.getCurrentThreadId() : -1;
+  }
+
+  public long getTscFrequency() {
+    return profiler != null ? taskBlockBridge.getTscFrequency() : 1_000_000_000L;
+  }
+
+  boolean hasTaskBlockEventSupport() {
+    return profiler != null && taskBlockBridge.hasTaskBlockEventSupport();
+  }
+
+  boolean hasTaskBlockFromContextSupport() {
+    return profiler != null && taskBlockBridge.hasTaskBlockFromContextSupport();
+  }
+
+  long blockEnter(int state) {
+    if (profiler != null && recordingFlag.get()) {
+      return taskBlockBridge.blockEnter(state);
+    }
+    return 0L;
+  }
+
+  void blockExit(long token) {
+    if (token != 0L && profiler != null) {
+      taskBlockBridge.blockExit(token);
+    }
+  }
+
+  void recordTaskBlockEvent(long startTicks, long blocker, long unblockingSpanId) {
+    if (profiler != null && recordingFlag.get()) {
+      long endTicks = profiler.getCurrentTicks();
+      taskBlockBridge.recordTaskBlock(startTicks, endTicks, blocker, unblockingSpanId);
+    }
+  }
+
   void recordTaskBlockWithContextEvent(
       long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
     if (profiler != null && recordingFlag.get()) {
       long endTicks = profiler.getCurrentTicks();
       taskBlockBridge.recordTaskBlockWithContext(
           startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+  }
+
+  void recordTaskBlockFromContextEvent(
+      int tid,
+      long startTicks,
+      long endTicks,
+      long blocker,
+      long unblockingSpanId,
+      long spanId,
+      long rootSpanId) {
+    if (profiler != null && recordingFlag.get()) {
+      taskBlockBridge.recordTaskBlockFromContext(
+          tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
     }
   }
 
@@ -802,13 +858,25 @@ public final class DatadogProfiler {
   }
 
   private static final class TaskBlockBridge {
+    private static final long DEFAULT_TSC_FREQUENCY = 1_000_000_000L;
+
     private final JavaProfiler profiler;
+    private final Method getCurrentThreadId;
+    private final Method getTscFrequency;
+    private final Method recordTaskBlock;
     private final Method recordTaskBlockWithContext;
+    private final Method recordTaskBlockFromContext;
+    private final Method blockEnter;
+    private final Method blockExit;
     private final Method parkEnter;
     private final Method parkExit;
 
     private TaskBlockBridge(JavaProfiler profiler) {
       this.profiler = profiler;
+      this.getCurrentThreadId = method("getCurrentThreadId");
+      this.getTscFrequency = method("getTscFrequency");
+      this.recordTaskBlock =
+          method("recordTaskBlock", long.class, long.class, long.class, long.class);
       this.recordTaskBlockWithContext =
           method(
               "recordTaskBlockWithContext",
@@ -818,12 +886,47 @@ public final class DatadogProfiler {
               long.class,
               long.class,
               long.class);
+      this.recordTaskBlockFromContext =
+          method(
+              "recordTaskBlockFromContext",
+              int.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class);
+      this.blockEnter = method("blockEnter", int.class);
+      this.blockExit = method("blockExit", long.class);
       this.parkEnter = method("parkEnter");
       this.parkExit = method("parkExit", long.class, long.class);
     }
 
+    private int getCurrentThreadId() {
+      if (getCurrentThreadId == null) {
+        return -1;
+      }
+      return ((Number) invoke(getCurrentThreadId)).intValue();
+    }
+
     private boolean hasTaskBlockEventSupport() {
-      return recordTaskBlockWithContext != null && parkEnter != null && parkExit != null;
+      return recordTaskBlock != null && parkEnter != null && parkExit != null;
+    }
+
+    private boolean hasTaskBlockFromContextSupport() {
+      return getCurrentThreadId != null && recordTaskBlockFromContext != null;
+    }
+
+    private long getTscFrequency() {
+      if (getTscFrequency == null) {
+        return DEFAULT_TSC_FREQUENCY;
+      }
+      return ((Number) invoke(getTscFrequency)).longValue();
+    }
+
+    private void recordTaskBlock(
+        long startTicks, long endTicks, long blocker, long unblockingSpanId) {
+      invokeIfPresent(recordTaskBlock, startTicks, endTicks, blocker, unblockingSpanId);
     }
 
     private void recordTaskBlockWithContext(
@@ -841,6 +944,36 @@ public final class DatadogProfiler {
           unblockingSpanId,
           spanId,
           rootSpanId);
+    }
+
+    private void recordTaskBlockFromContext(
+        int tid,
+        long startTicks,
+        long endTicks,
+        long blocker,
+        long unblockingSpanId,
+        long spanId,
+        long rootSpanId) {
+      invokeIfPresent(
+          recordTaskBlockFromContext,
+          tid,
+          startTicks,
+          endTicks,
+          blocker,
+          unblockingSpanId,
+          spanId,
+          rootSpanId);
+    }
+
+    private long blockEnter(int state) {
+      if (blockEnter == null) {
+        return 0L;
+      }
+      return ((Number) invoke(blockEnter, state)).longValue();
+    }
+
+    private void blockExit(long token) {
+      invokeIfPresent(blockExit, token);
     }
 
     private void parkEnter() {
