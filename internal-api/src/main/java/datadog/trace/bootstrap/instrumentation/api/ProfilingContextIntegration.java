@@ -9,6 +9,11 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
   /** Native {@code OSThreadState::SLEEPING}; used for span-scoped Thread.sleep precheck state. */
   int BLOCKING_STATE_SLEEPING = 7;
 
+  int TASK_BLOCK_SUPPRESSION_SNAPSHOT_SIZE = 3;
+  int TASK_BLOCK_SUPPRESSION_ANCHOR_SAMPLE_ID = 0;
+  int TASK_BLOCK_SUPPRESSION_SUPPRESSED_COUNT = 1;
+  int TASK_BLOCK_SUPPRESSION_OBSERVED_STATE = 2;
+
   /**
    * invoked when the profiler is started, implementations must not initialise JFR before this is
    * called.
@@ -96,6 +101,16 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
   default void blockExit(long token) {}
 
   /**
+   * Clears a native blocked interval and stores reconstruction fields into {@code snapshot}.
+   *
+   * <p>The snapshot layout is {@link #TASK_BLOCK_SUPPRESSION_ANCHOR_SAMPLE_ID}, {@link
+   * #TASK_BLOCK_SUPPRESSION_SUPPRESSED_COUNT}, and {@link #TASK_BLOCK_SUPPRESSION_OBSERVED_STATE}.
+   */
+  default void blockExit(long token, long[] snapshot) {
+    blockExit(token);
+  }
+
+  /**
    * Enqueues a TaskBlock interval for asynchronous recording off the critical request path. The
    * actual JFR write is performed by a background drain thread; the calling thread only pays the
    * cost of a non-blocking queue offer.
@@ -112,6 +127,18 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
    */
   default void enqueueTaskBlock(
       long startTicks, long durationNanos, long blocker, long spanId, long rootSpanId) {}
+
+  default void enqueueTaskBlock(
+      long startTicks,
+      long durationNanos,
+      long blocker,
+      long spanId,
+      long rootSpanId,
+      long anchorSampleId,
+      long suppressedSampleCount,
+      int observedBlockingState) {
+    enqueueTaskBlock(startTicks, durationNanos, blocker, spanId, rootSpanId);
+  }
 
   /**
    * Called when the current thread is about to enter {@code LockSupport.park*}. The native profiler

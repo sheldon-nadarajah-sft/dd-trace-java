@@ -812,6 +812,12 @@ public final class DatadogProfiler {
     }
   }
 
+  void blockExit(long token, long[] snapshot) {
+    if (token != 0L && profiler != null) {
+      taskBlockBridge.blockExit(token, snapshot);
+    }
+  }
+
   void recordTaskBlockEvent(long startTicks, long blocker, long unblockingSpanId) {
     if (profiler != null && recordingFlag.get()) {
       long endTicks = profiler.getCurrentTicks();
@@ -842,6 +848,32 @@ public final class DatadogProfiler {
     }
   }
 
+  void recordTaskBlockFromContextEvent(
+      int tid,
+      long startTicks,
+      long endTicks,
+      long blocker,
+      long unblockingSpanId,
+      long spanId,
+      long rootSpanId,
+      long anchorSampleId,
+      long suppressedSampleCount,
+      int observedBlockingState) {
+    if (profiler != null && recordingFlag.get()) {
+      taskBlockBridge.recordTaskBlockFromContext(
+          tid,
+          startTicks,
+          endTicks,
+          blocker,
+          unblockingSpanId,
+          spanId,
+          rootSpanId,
+          anchorSampleId,
+          suppressedSampleCount,
+          observedBlockingState);
+    }
+  }
+
   void parkEnter() {
     // Guard with recordingFlag: stopProfiler() calls LockSupport.parkNanos while waiting for
     // the profiler to stop. Without this guard an instrumented park on a tracing thread could call
@@ -866,8 +898,10 @@ public final class DatadogProfiler {
     private final Method recordTaskBlock;
     private final Method recordTaskBlockWithContext;
     private final Method recordTaskBlockFromContext;
+    private final Method recordTaskBlockFromContextWithSuppression;
     private final Method blockEnter;
     private final Method blockExit;
+    private final Method blockExitWithSuppressionSnapshot;
     private final Method parkEnter;
     private final Method parkExit;
 
@@ -896,8 +930,22 @@ public final class DatadogProfiler {
               long.class,
               long.class,
               long.class);
+      this.recordTaskBlockFromContextWithSuppression =
+          method(
+              "recordTaskBlockFromContext",
+              int.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              int.class);
       this.blockEnter = method("blockEnter", int.class);
       this.blockExit = method("blockExit", long.class);
+      this.blockExitWithSuppressionSnapshot = method("blockExit", long.class, long[].class);
       this.parkEnter = method("parkEnter");
       this.parkExit = method("parkExit", long.class, long.class);
     }
@@ -965,6 +1013,36 @@ public final class DatadogProfiler {
           rootSpanId);
     }
 
+    private void recordTaskBlockFromContext(
+        int tid,
+        long startTicks,
+        long endTicks,
+        long blocker,
+        long unblockingSpanId,
+        long spanId,
+        long rootSpanId,
+        long anchorSampleId,
+        long suppressedSampleCount,
+        int observedBlockingState) {
+      if (recordTaskBlockFromContextWithSuppression == null) {
+        recordTaskBlockFromContext(
+            tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+        return;
+      }
+      invokeIfPresent(
+          recordTaskBlockFromContextWithSuppression,
+          tid,
+          startTicks,
+          endTicks,
+          blocker,
+          unblockingSpanId,
+          spanId,
+          rootSpanId,
+          anchorSampleId,
+          suppressedSampleCount,
+          observedBlockingState);
+    }
+
     private long blockEnter(int state) {
       if (blockEnter == null) {
         return 0L;
@@ -974,6 +1052,14 @@ public final class DatadogProfiler {
 
     private void blockExit(long token) {
       invokeIfPresent(blockExit, token);
+    }
+
+    private void blockExit(long token, long[] snapshot) {
+      if (blockExitWithSuppressionSnapshot == null) {
+        blockExit(token);
+        return;
+      }
+      invokeIfPresent(blockExitWithSuppressionSnapshot, token, snapshot);
     }
 
     private void parkEnter() {

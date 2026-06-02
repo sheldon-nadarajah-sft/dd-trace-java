@@ -43,7 +43,9 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
 
   // Bounded queue for deferred TaskBlock events. offer() is non-blocking; a full queue drops events
   // and increments DROPPED_TASK_BLOCKS for diagnostics.
-  // Entry layout: [tid, startTicks, durationNanos, blocker, spanId, rootSpanId]
+  // Entry layout:
+  // [tid, startTicks, durationNanos, blocker, spanId, rootSpanId,
+  //  anchorSampleId, suppressedSampleCount, observedBlockingState]
   private static final ArrayBlockingQueue<long[]> TASK_BLOCK_QUEUE = new ArrayBlockingQueue<>(2048);
   private static final AtomicLong DROPPED_TASK_BLOCKS = new AtomicLong();
 
@@ -120,14 +122,42 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   }
 
   @Override
+  public void blockExit(long token, long[] snapshot) {
+    DDPROF.blockExit(token, snapshot);
+  }
+
+  @Override
   public void enqueueTaskBlock(
       long startTicks, long durationNanos, long blocker, long spanId, long rootSpanId) {
+    enqueueTaskBlock(startTicks, durationNanos, blocker, spanId, rootSpanId, 0L, 0L, 0);
+  }
+
+  @Override
+  public void enqueueTaskBlock(
+      long startTicks,
+      long durationNanos,
+      long blocker,
+      long spanId,
+      long rootSpanId,
+      long anchorSampleId,
+      long suppressedSampleCount,
+      int observedBlockingState) {
     int tid = getCurrentThreadId();
     if (tid < 0) {
       return;
     }
     if (!TASK_BLOCK_QUEUE.offer(
-        new long[] {tid, startTicks, durationNanos, blocker, spanId, rootSpanId})) {
+        new long[] {
+          tid,
+          startTicks,
+          durationNanos,
+          blocker,
+          spanId,
+          rootSpanId,
+          anchorSampleId,
+          suppressedSampleCount,
+          observedBlockingState
+        })) {
       DROPPED_TASK_BLOCKS.incrementAndGet();
     }
   }
@@ -145,10 +175,22 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
         long blocker = entry[3];
         long spanId = entry[4];
         long rootSpanId = entry[5];
+        long anchorSampleId = entry.length > 6 ? entry[6] : 0L;
+        long suppressedSampleCount = entry.length > 7 ? entry[7] : 0L;
+        int observedBlockingState = entry.length > 8 ? (int) entry[8] : 0;
         long freq = TSC_FREQUENCY;
         long endTicks = saturatingAdd(startTicks, nanosToTicks(durationNanos, freq));
         DDPROF.recordTaskBlockFromContextEvent(
-            tid, startTicks, endTicks, blocker, 0L, spanId, rootSpanId);
+            tid,
+            startTicks,
+            endTicks,
+            blocker,
+            0L,
+            spanId,
+            rootSpanId,
+            anchorSampleId,
+            suppressedSampleCount,
+            observedBlockingState);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
