@@ -14,7 +14,6 @@ import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallCollapsi
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallContextFilter;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallInterval;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallPrecheck;
-import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallThreadsPerTick;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isAllocationProfilingEnabled;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isCpuProfilerEnabled;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isLiveHeapSizeTrackingEnabled;
@@ -319,10 +318,6 @@ public final class DatadogProfiler {
       }
       if (getWallPrecheck(configProvider)) {
         cmd.append(",wallprecheck=true");
-      }
-      int walltpt = getWallThreadsPerTick(configProvider);
-      if (walltpt > 0) {
-        cmd.append(",walltpt=").append(walltpt);
       }
     }
     cmd.append(",loglevel=").append(getLogLevel(configProvider));
