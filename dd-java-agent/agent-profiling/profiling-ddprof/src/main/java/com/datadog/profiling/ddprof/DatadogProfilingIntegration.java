@@ -49,8 +49,8 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   private static final ArrayBlockingQueue<long[]> TASK_BLOCK_QUEUE = new ArrayBlockingQueue<>(2048);
   private static final AtomicLong DROPPED_TASK_BLOCKS = new AtomicLong();
 
-  // TSC frequency used by the drain thread to convert durationNanos → endTicks.
-  // Initialised in onStart(); default is 1e9 Hz (safe no-op: 1 ns per tick).
+  // TSC frequency used by the drain thread to convert durationNanos to endTicks.
+  // Initial value avoids zero-frequency conversion before onStart() publishes the profiler value.
   private static volatile long TSC_FREQUENCY = 1_000_000_000L;
 
   private static volatile Thread drainThread;
@@ -142,6 +142,9 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
       long anchorSampleId,
       long suppressedSampleCount,
       int observedBlockingState) {
+    if (spanId != 0L) {
+      return;
+    }
     int tid = getCurrentThreadId();
     if (tid < 0) {
       return;
@@ -244,6 +247,9 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   @Override
   public void recordTaskBlockWithContext(
       long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+    if (spanId != 0L) {
+      return;
+    }
     DDPROF.recordTaskBlockWithContextEvent(
         startTicks, blocker, unblockingSpanId, spanId, rootSpanId);
   }

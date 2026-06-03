@@ -8,9 +8,9 @@ import net.bytebuddy.jar.asm.Type;
 import net.bytebuddy.utility.OpenedClassReader;
 
 /**
- * Wraps each {@code INVOKESTATIC java/lang/Thread.sleep(...)V} and {@code INVOKEVIRTUAL
- * java/util/concurrent/TimeUnit.sleep(J)V} call site in a TaskBlock capture/finish pair with a
- * try-finally so the {@code finish} runs even when the sleep throws {@code InterruptedException}.
+ * Wraps each {@code INVOKESTATIC java/lang/Thread.sleep(...)V} call site in a TaskBlock
+ * capture/finish pair with a try-finally so the {@code finish} runs even when the sleep throws
+ * {@code InterruptedException}.
  *
  * <p>For {@code Thread.sleep(J)V} the emitted shape at each call site is:
  *
@@ -47,7 +47,6 @@ import net.bytebuddy.utility.OpenedClassReader;
 final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
 
   static final String THREAD_INTERNAL = "java/lang/Thread";
-  static final String TIME_UNIT_INTERNAL = "java/util/concurrent/TimeUnit";
   static final String STATE_INTERNAL =
       "datadog/trace/bootstrap/instrumentation/java/concurrent/TaskBlockHelper$State";
   static final String STATE_DESC = "L" + STATE_INTERNAL + ";";
@@ -63,7 +62,6 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
   private static final Type LONG_TYPE = Type.LONG_TYPE;
   private static final Type INT_TYPE = Type.INT_TYPE;
   private static final Type DURATION_TYPE = Type.getObjectType("java/time/Duration");
-  private static final Type TIME_UNIT_TYPE = Type.getObjectType(TIME_UNIT_INTERNAL);
   private static final Type STATE_TYPE = Type.getObjectType(STATE_INTERNAL);
   private static final Type THROWABLE_TYPE = Type.getObjectType("java/lang/Throwable");
 
@@ -92,13 +90,6 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
       }
       return;
     }
-    if (opcode == Opcodes.INVOKEVIRTUAL
-        && TIME_UNIT_INTERNAL.equals(owner)
-        && "sleep".equals(name)
-        && SLEEP_J_DESC.equals(descriptor)) {
-      emitWrappedTimeUnitSleepCall(owner, name, descriptor, isInterface);
-      return;
-    }
     super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
   }
 
@@ -110,6 +101,8 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
     final int stateLocal = newLocal(STATE_TYPE);
     final int throwableLocal = newLocal(THROWABLE_TYPE);
 
+    final Label direct = new Label();
+    final Label wrapped = new Label();
     final Label tryStart = new Label();
     final Label tryEnd = new Label();
     final Label handler = new Label();
@@ -123,68 +116,32 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
     }
     visitNewLocalVarInsn(Opcodes.LSTORE, tmpLong);
 
-    // captureForSleep() — null when no active span (TaskBlockHelper fast-path).
+    if (isJI) {
+      emitSleepJIGuard(tmpLong, tmpInt, direct, wrapped);
+    } else {
+      emitSleepJGuard(tmpLong, direct, wrapped);
+    }
+
+    super.visitLabel(direct);
+    emitOriginalPrimitiveSleepCall(owner, name, descriptor, isInterface, tmpLong, tmpInt);
+    super.visitJumpInsn(Opcodes.GOTO, end);
+
+    super.visitLabel(wrapped);
+
+    // captureForSleep() - null when an active span makes TaskBlock emission ineligible.
     super.visitMethodInsn(
         Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "captureForSleep", CAPTURE_FOR_SLEEP_DESC, false);
     visitNewLocalVarInsn(Opcodes.ASTORE, stateLocal);
 
     // Protected region: the original Thread.sleep call.
     super.visitLabel(tryStart);
-    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
-    if (isJI) {
-      visitNewLocalVarInsn(Opcodes.ILOAD, tmpInt);
-    }
-    super.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, descriptor, isInterface);
+    emitOriginalPrimitiveSleepCall(owner, name, descriptor, isInterface, tmpLong, tmpInt);
     visitNewLocalVarInsn(Opcodes.ALOAD, stateLocal);
     super.visitMethodInsn(Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "finish", FINISH_DESC, false);
     super.visitJumpInsn(Opcodes.GOTO, end);
 
     // Exception handler: finish first, then rethrow. finish() tolerates null State, so the no-op
     // case (no active span at capture) is harmless.
-    super.visitLabel(tryEnd);
-    super.visitLabel(handler);
-    visitNewLocalVarInsn(Opcodes.ASTORE, throwableLocal);
-    visitNewLocalVarInsn(Opcodes.ALOAD, stateLocal);
-    super.visitMethodInsn(Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "finish", FINISH_DESC, false);
-    visitNewLocalVarInsn(Opcodes.ALOAD, throwableLocal);
-    super.visitInsn(Opcodes.ATHROW);
-
-    super.visitLabel(end);
-  }
-
-  /**
-   * Emits the wrapped form for {@code TimeUnit.sleep(long)}. The incoming stack has {@code [...,
-   * timeUnit, timeout]}; the long argument is popped first, then the receiver reference.
-   */
-  private void emitWrappedTimeUnitSleepCall(
-      final String owner, final String name, final String descriptor, final boolean isInterface) {
-    final int tmpLong = newLocal(LONG_TYPE);
-    final int tmpTimeUnit = newLocal(TIME_UNIT_TYPE);
-    final int stateLocal = newLocal(STATE_TYPE);
-    final int throwableLocal = newLocal(THROWABLE_TYPE);
-
-    final Label tryStart = new Label();
-    final Label tryEnd = new Label();
-    final Label handler = new Label();
-    final Label end = new Label();
-
-    super.visitTryCatchBlock(tryStart, tryEnd, handler, null);
-
-    visitNewLocalVarInsn(Opcodes.LSTORE, tmpLong);
-    visitNewLocalVarInsn(Opcodes.ASTORE, tmpTimeUnit);
-
-    super.visitMethodInsn(
-        Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "captureForSleep", CAPTURE_FOR_SLEEP_DESC, false);
-    visitNewLocalVarInsn(Opcodes.ASTORE, stateLocal);
-
-    super.visitLabel(tryStart);
-    visitNewLocalVarInsn(Opcodes.ALOAD, tmpTimeUnit);
-    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
-    super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, name, descriptor, isInterface);
-    visitNewLocalVarInsn(Opcodes.ALOAD, stateLocal);
-    super.visitMethodInsn(Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "finish", FINISH_DESC, false);
-    super.visitJumpInsn(Opcodes.GOTO, end);
-
     super.visitLabel(tryEnd);
     super.visitLabel(handler);
     visitNewLocalVarInsn(Opcodes.ASTORE, throwableLocal);
@@ -217,7 +174,7 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
     // Pop the Duration reference into a local.
     visitNewLocalVarInsn(Opcodes.ASTORE, tmpDuration);
 
-    // captureForSleep() — null when no active span (TaskBlockHelper fast-path).
+    // captureForSleep() - null when an active span makes TaskBlock emission ineligible.
     super.visitMethodInsn(
         Opcodes.INVOKESTATIC, TASK_BLOCK_HELPER, "captureForSleep", CAPTURE_FOR_SLEEP_DESC, false);
     visitNewLocalVarInsn(Opcodes.ASTORE, stateLocal);
@@ -240,6 +197,52 @@ final class ThreadSleepCallSiteMethodVisitor extends LocalVariablesSorter {
     super.visitInsn(Opcodes.ATHROW);
 
     super.visitLabel(end);
+  }
+
+  private void emitSleepJGuard(final int tmpLong, final Label direct, final Label wrapped) {
+    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
+    super.visitInsn(Opcodes.LCONST_0);
+    super.visitInsn(Opcodes.LCMP);
+    super.visitJumpInsn(Opcodes.IFGT, wrapped);
+    super.visitJumpInsn(Opcodes.GOTO, direct);
+  }
+
+  private void emitSleepJIGuard(
+      final int tmpLong, final int tmpInt, final Label direct, final Label wrapped) {
+    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
+    super.visitInsn(Opcodes.LCONST_0);
+    super.visitInsn(Opcodes.LCMP);
+    super.visitJumpInsn(Opcodes.IFLT, direct);
+
+    visitNewLocalVarInsn(Opcodes.ILOAD, tmpInt);
+    super.visitJumpInsn(Opcodes.IFLT, direct);
+
+    visitNewLocalVarInsn(Opcodes.ILOAD, tmpInt);
+    super.visitLdcInsn(999999);
+    super.visitJumpInsn(Opcodes.IF_ICMPGT, direct);
+
+    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
+    super.visitInsn(Opcodes.LCONST_0);
+    super.visitInsn(Opcodes.LCMP);
+    super.visitJumpInsn(Opcodes.IFNE, wrapped);
+
+    visitNewLocalVarInsn(Opcodes.ILOAD, tmpInt);
+    super.visitJumpInsn(Opcodes.IFNE, wrapped);
+    super.visitJumpInsn(Opcodes.GOTO, direct);
+  }
+
+  private void emitOriginalPrimitiveSleepCall(
+      final String owner,
+      final String name,
+      final String descriptor,
+      final boolean isInterface,
+      final int tmpLong,
+      final int tmpInt) {
+    visitNewLocalVarInsn(Opcodes.LLOAD, tmpLong);
+    if (SLEEP_JI_DESC.equals(descriptor)) {
+      visitNewLocalVarInsn(Opcodes.ILOAD, tmpInt);
+    }
+    super.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, descriptor, isInterface);
   }
 
   private void visitNewLocalVarInsn(final int opcode, final int local) {

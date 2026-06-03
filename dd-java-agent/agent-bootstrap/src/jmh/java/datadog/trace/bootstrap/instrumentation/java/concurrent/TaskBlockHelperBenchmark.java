@@ -22,6 +22,16 @@ import org.openjdk.jmh.annotations.Warmup;
 public class TaskBlockHelperBenchmark {
 
   @Benchmark
+  public TaskBlockHelper.State captureForSleep() {
+    return TaskBlockHelper.captureForSleep();
+  }
+
+  @Benchmark
+  public void captureAndFinishForSleep() {
+    TaskBlockHelper.finish(TaskBlockHelper.captureForSleep());
+  }
+
+  @Benchmark
   public void finishNull() {
     TaskBlockHelper.finish(null);
   }
@@ -45,8 +55,6 @@ public class TaskBlockHelperBenchmark {
   public static class BenchmarkState {
     private static final long START_TICKS = 42;
     private static final long BLOCKER = 7;
-    private static final long SPAN_ID = 11;
-    private static final long ROOT_SPAN_ID = 13;
     private static final long BLOCK_TOKEN = 17;
 
     private final ProfilingContextIntegration profiling = ProfilingContextIntegration.NoOp.INSTANCE;
@@ -69,8 +77,8 @@ public class TaskBlockHelperBenchmark {
               now - 2 * TaskBlockHelper.MIN_TASK_BLOCK_NANOS,
               BLOCKER,
               true,
-              SPAN_ID,
-              ROOT_SPAN_ID,
+              0L,
+              0L,
               BLOCK_TOKEN);
     }
   }

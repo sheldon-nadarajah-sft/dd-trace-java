@@ -22,17 +22,16 @@ import net.bytebuddy.matcher.ElementMatchers;
 /**
  * Instruments {@link java.util.concurrent.locks.LockSupport#park} variants as the Java entry point
  * for native parked-state tracking. On platform threads, {@code parkEnter} snapshots the OTEP TLS
- * span context; on {@code parkExit} it emits a {@code datadog.TaskBlock} JFR event if the park
- * interval exceeded 1 ms and a span was active at entry. Virtual threads use the explicit
- * span/root-only path in {@link LockSupportHelper} instead of native carrier-thread TLS.
+ * context; on {@code parkExit} it emits a {@code datadog.TaskBlock} JFR event if the park interval
+ * exceeded 1 ms and no span was active at entry. Virtual threads use the explicit zero-context path
+ * in {@link LockSupportHelper} instead of native carrier-thread TLS.
  *
  * <p>Also instruments {@link java.util.concurrent.locks.LockSupport#unpark} to capture the span ID
  * of the unblocking thread, which is then recorded in the native TaskBlock event.
  *
- * <p>The instrumentation is span-scoped: {@code parkEnter} is called only when a profiling span is
- * active at park entry. {@code SIGVTALRM} suppression for parked threads is provided by the {@code
- * wallprecheck} blocked-run filter after the first useful MethodSample in that span-scoped park
- * interval.
+ * <p>Active-span parks are represented by normal wall-clock samples. TaskBlock summarizes untraced
+ * blocked runs; {@code SIGVTALRM} suppression for parked threads is provided by the {@code
+ * wallprecheck} blocked-run filter after the first useful MethodSample in that run.
  */
 @AutoService(InstrumenterModule.class)
 public class LockSupportProfilingInstrumentation extends InstrumenterModule.Profiling

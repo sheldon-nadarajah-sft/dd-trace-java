@@ -31,12 +31,6 @@ final class LockSupportTaskBlockProfilingTest
       attr("unblockingSpanId", "unblockingSpanId", "unblockingSpanId", NUMBER);
   private static final IAttribute<IQuantity> TASK_BLOCK_EMITTED =
       attr("numTaskBlockEmitted", "numTaskBlockEmitted", "numTaskBlockEmitted", NUMBER);
-  private static final IAttribute<IQuantity> TASK_BLOCK_SKIPPED_SPAN_ZERO =
-      attr(
-          "numTaskBlockSkippedSpanZero",
-          "numTaskBlockSkippedSpanZero",
-          "numTaskBlockSkippedSpanZero",
-          NUMBER);
   private static final IAttribute<IQuantity> TASK_BLOCK_SKIPPED_TOO_SHORT =
       attr(
           "numTaskBlockSkippedTooShort",
@@ -45,7 +39,7 @@ final class LockSupportTaskBlockProfilingTest
           NUMBER);
 
   @Test
-  @DisplayName("LockSupport parks emit span-attributed TaskBlock events")
+  @DisplayName("Spanless LockSupport parks emit zero-context TaskBlock events")
   void lockSupportParksEmitTaskBlockEvents() throws Exception {
     Process targetProcess = createProcessBuilder().start();
 
@@ -54,13 +48,14 @@ final class LockSupportTaskBlockProfilingTest
     JfrStats stats = loadStats();
     assertTrue(stats.taskBlockCount > 0, "Expected datadog.TaskBlock events");
     assertTrue(stats.taskBlockEmitted > 0, "Expected numTaskBlockEmitted counter");
-    assertTrue(stats.taskBlockSkippedSpanZero > 0, "Expected spanless parks to be skipped");
     assertTrue(stats.taskBlockSkippedTooShort > 0, "Expected short parks to be skipped");
     assertTrue(stats.taskBlocksWithNonZeroBlocker > 0, "Expected blocker identity to be recorded");
     assertTrue(stats.taskBlocksWithUnblockingSpan > 0, "Expected unblocking span to be recorded");
-    assertFalse(stats.hasZeroSpanId, "TaskBlock events must have non-zero spanId");
+    assertFalse(stats.hasActiveSpanTaskBlock, "Active-span parks must not emit TaskBlock events");
+    assertFalse(stats.hasNonZeroSpanId, "Spanless TaskBlock events must carry zero spanId");
     assertFalse(
-        stats.hasZeroLocalRootSpanId, "TaskBlock events must have non-zero localRootSpanId");
+        stats.hasNonZeroLocalRootSpanId,
+        "Spanless TaskBlock events must carry zero localRootSpanId");
     assertFalse(stats.hasMissingEventThread, "TaskBlock events must resolve Event Thread");
     assertTrue(
         stats.hasExpectedOperation,
@@ -109,8 +104,11 @@ final class LockSupportTaskBlockProfilingTest
 
     public static void main(String[] args) throws Exception {
       LockSupportTaskBlockForkedApp app = new LockSupportTaskBlockForkedApp(GlobalTracer.get());
+      Thread.currentThread().setName("locksupport-active");
       app.runActiveSpanParks();
+      Thread.currentThread().setName("locksupport-spanless");
       app.runSpanlessParks();
+      Thread.currentThread().setName("locksupport-short");
       app.runTooShortParks();
       for (int i = 0; i < 5; i++) {
         app.runUnparkAttribution();
@@ -143,12 +141,7 @@ final class LockSupportTaskBlockProfilingTest
 
     private void runTooShortParks() {
       for (int i = 0; i < PARK_ITERATIONS; i++) {
-        Span span = tracer.buildSpan("locksupport.too-short").start();
-        try (Scope scope = tracer.activateSpan(span)) {
-          LockSupport.parkNanos(BLOCKER, SHORT_PARK_NANOS);
-        } finally {
-          span.finish();
-        }
+        LockSupport.parkNanos(BLOCKER, SHORT_PARK_NANOS);
       }
     }
 
@@ -157,15 +150,10 @@ final class LockSupportTaskBlockProfilingTest
       Thread parkedThread =
           new Thread(
               () -> {
-                Span span = tracer.buildSpan("locksupport.unpark.parked").start();
-                try (Scope scope = tracer.activateSpan(span)) {
-                  parkedThreadReady.countDown();
-                  LockSupport.parkNanos(BLOCKER, TimeUnit.SECONDS.toNanos(5));
-                } finally {
-                  span.finish();
-                }
+                parkedThreadReady.countDown();
+                LockSupport.parkNanos(BLOCKER, TimeUnit.SECONDS.toNanos(5));
               },
-              "locksupport-taskblock-parked");
+              "locksupport-unpark-parked");
 
       parkedThread.start();
       parkedThreadReady.await();
@@ -188,14 +176,13 @@ final class LockSupportTaskBlockProfilingTest
   static final class JfrStats {
     private long taskBlockCount;
     private long taskBlockEmitted;
-    private long taskBlockSkippedSpanZero;
     private long taskBlockSkippedTooShort;
     private long taskBlocksWithNonZeroBlocker;
     private long taskBlocksWithUnblockingSpan;
-    private boolean hasZeroSpanId;
-    private boolean hasZeroLocalRootSpanId;
+    private boolean hasActiveSpanTaskBlock;
+    private boolean hasNonZeroSpanId;
+    private boolean hasNonZeroLocalRootSpanId;
     private boolean hasMissingEventThread;
-    private boolean hasExpectedOperation;
 
     private void add(IItemCollection events) {
       addTaskBlocks(events);
@@ -213,22 +200,25 @@ final class LockSupportTaskBlockProfilingTest
             UNBLOCKING_SPAN_ID.getAccessor(items.getType());
         IMemberAccessor<String, IItem> eventThreadAccessor =
             JdkAttributes.EVENT_THREAD_NAME.getAccessor(items.getType());
-        IMemberAccessor<String, IItem> operationAccessor = OPERATION.getAccessor(items.getType());
         for (IItem item : items) {
+          String eventThread =
+              eventThreadAccessor == null ? null : eventThreadAccessor.getMember(item);
+          if ("locksupport-active".equals(eventThread)) {
+            hasActiveSpanTaskBlock = true;
+            continue;
+          }
+          if (!"locksupport-spanless".equals(eventThread)
+              && !"locksupport-unpark-parked".equals(eventThread)) {
+            continue;
+          }
           taskBlockCount++;
           long spanId = spanIdAccessor.getMember(item).longValue();
           long localRootSpanId = localRootSpanIdAccessor.getMember(item).longValue();
           long blocker = blockerAccessor.getMember(item).longValue();
           long unblockingSpanId = unblockingSpanIdAccessor.getMember(item).longValue();
-          String eventThread =
-              eventThreadAccessor == null ? null : eventThreadAccessor.getMember(item);
-          String operation = operationAccessor == null ? null : operationAccessor.getMember(item);
-          hasZeroSpanId |= spanId == 0;
-          hasZeroLocalRootSpanId |= localRootSpanId == 0;
+          hasNonZeroSpanId |= spanId != 0;
+          hasNonZeroLocalRootSpanId |= localRootSpanId != 0;
           hasMissingEventThread |= eventThread == null || eventThread.isEmpty();
-          hasExpectedOperation |=
-              "locksupport.active".equals(operation)
-                  || "locksupport.unpark.parked".equals(operation);
           if (blocker != 0) {
             taskBlocksWithNonZeroBlocker++;
           }
@@ -244,13 +234,10 @@ final class LockSupportTaskBlockProfilingTest
       for (IItemIterable items : epochs) {
         IMemberAccessor<IQuantity, IItem> emittedAccessor =
             TASK_BLOCK_EMITTED.getAccessor(items.getType());
-        IMemberAccessor<IQuantity, IItem> spanZeroAccessor =
-            TASK_BLOCK_SKIPPED_SPAN_ZERO.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> tooShortAccessor =
             TASK_BLOCK_SKIPPED_TOO_SHORT.getAccessor(items.getType());
         for (IItem item : items) {
           taskBlockEmitted += emittedAccessor.getMember(item).longValue();
-          taskBlockSkippedSpanZero += spanZeroAccessor.getMember(item).longValue();
           taskBlockSkippedTooShort += tooShortAccessor.getMember(item).longValue();
         }
       }

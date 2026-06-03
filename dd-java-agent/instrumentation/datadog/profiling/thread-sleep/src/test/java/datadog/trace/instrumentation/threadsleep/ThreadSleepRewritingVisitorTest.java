@@ -7,7 +7,6 @@ import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMetho
 import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMethodVisitor.SLEEP_J_DESC;
 import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMethodVisitor.TASK_BLOCK_HELPER;
 import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMethodVisitor.THREAD_INTERNAL;
-import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMethodVisitor.TIME_UNIT_INTERNAL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,26 +27,33 @@ import org.junit.jupiter.api.Test;
 
 /**
  * ASM-level shape tests for {@link ThreadSleepRewritingVisitor}. Verifies that every {@code
- * INVOKESTATIC Thread.sleep} call site is wrapped in a {@code captureForSleep} / {@code finish}
- * pair, that the original args are preserved, and that the protected region covers both the normal
- * and exceptional exit paths.
+ * INVOKESTATIC Thread.sleep} call site has a direct bypass path or is wrapped in a {@code
+ * captureForSleep} / {@code finish} pair, that the original args are preserved, and that the
+ * protected region covers both the normal and exceptional exit paths.
  */
 class ThreadSleepRewritingVisitorTest {
+
+  private static final String TIME_UNIT_INTERNAL = "java/util/concurrent/TimeUnit";
 
   @Test
   void singleSleepJ_isWrappedWithCaptureAndFinishAndPreservesArg() throws IOException {
     List<InstructionRecord> insns = rewriteAndScan(SingleSleepJFixture.class, "doSleep");
 
-    int sleepIdx = indexOfThreadSleep(insns, SLEEP_J_DESC);
-    assertTrue(sleepIdx >= 0, "expected INVOKESTATIC Thread.sleep(J)V to be present");
-
     int captureIdx = indexOfInvokeStatic(insns, "captureForSleep", CAPTURE_FOR_SLEEP_DESC);
-    assertTrue(
-        captureIdx >= 0 && captureIdx < sleepIdx, "captureForSleep must precede Thread.sleep");
+    assertTrue(captureIdx >= 0, "expected captureForSleep to be present");
 
-    int finishAfterSleep = nextInvokeStatic(insns, sleepIdx + 1, "finish", FINISH_DESC);
+    int directSleepIdx = indexOfThreadSleep(insns, SLEEP_J_DESC);
     assertTrue(
-        finishAfterSleep > sleepIdx,
+        directSleepIdx >= 0 && directSleepIdx < captureIdx,
+        "direct Thread.sleep(J)V bypass must precede captureForSleep");
+
+    int wrappedSleepIdx = nextThreadSleep(insns, captureIdx + 1, SLEEP_J_DESC);
+    assertTrue(
+        wrappedSleepIdx > captureIdx, "wrapped Thread.sleep(J)V must follow captureForSleep");
+
+    int finishAfterSleep = nextInvokeStatic(insns, wrappedSleepIdx + 1, "finish", FINISH_DESC);
+    assertTrue(
+        finishAfterSleep > wrappedSleepIdx,
         "finish call must follow Thread.sleep on the normal exit path");
 
     // The wrapped form must also have a second finish on the exception-handler path so finish
@@ -57,6 +63,12 @@ class ThreadSleepRewritingVisitorTest {
         2,
         finishCount,
         "expected two finish calls (normal exit + exception handler) per sleep site");
+
+    assertEquals(
+        2,
+        countThreadSleep(insns, SLEEP_J_DESC),
+        "guarded Thread.sleep(J)V emits one direct and one wrapped original call");
+    assertTrue(countOpcode(insns, Opcodes.IFGT) >= 1, "expected millis > 0 guard");
 
     // The original LSTORE/LLOAD round-trip is necessary so the long arg is preserved across the
     // injected captureForSleep call.
@@ -73,19 +85,36 @@ class ThreadSleepRewritingVisitorTest {
   void singleSleepJI_isWrappedAndArgOrderPreserved() throws IOException {
     List<InstructionRecord> insns = rewriteAndScan(SingleSleepJIFixture.class, "doSleep");
 
-    int sleepIdx = indexOfThreadSleep(insns, SLEEP_JI_DESC);
-    assertTrue(sleepIdx >= 0, "expected INVOKESTATIC Thread.sleep(JI)V to be present");
+    int captureIdx = indexOfInvokeStatic(insns, "captureForSleep", CAPTURE_FOR_SLEEP_DESC);
+    assertTrue(captureIdx >= 0, "expected captureForSleep to be present");
+
+    int directSleepIdx = indexOfThreadSleep(insns, SLEEP_JI_DESC);
+    assertTrue(
+        directSleepIdx >= 0 && directSleepIdx < captureIdx,
+        "direct Thread.sleep(JI)V bypass must precede captureForSleep");
+
+    int wrappedSleepIdx = nextThreadSleep(insns, captureIdx + 1, SLEEP_JI_DESC);
+    assertTrue(
+        wrappedSleepIdx > captureIdx, "wrapped Thread.sleep(JI)V must follow captureForSleep");
 
     // The (JI)V overload requires ISTORE (top of stack: int) before LSTORE (next: long).
     assertTrue(countOpcode(insns, Opcodes.ISTORE) >= 1, "expected ISTORE for cached nanos arg");
     assertTrue(countOpcode(insns, Opcodes.LSTORE) >= 1, "expected LSTORE for cached millis arg");
 
     // Stack-rebuild before the sleep call: LLOAD then ILOAD.
-    int lloadIdx = previousOpcode(insns, sleepIdx, Opcodes.LLOAD);
-    int iloadIdx = previousOpcode(insns, sleepIdx, Opcodes.ILOAD);
+    int lloadIdx = previousOpcode(insns, wrappedSleepIdx, Opcodes.LLOAD);
+    int iloadIdx = previousOpcode(insns, wrappedSleepIdx, Opcodes.ILOAD);
     assertTrue(
         lloadIdx >= 0 && iloadIdx >= 0 && lloadIdx < iloadIdx,
         "LLOAD must precede ILOAD when rebuilding the (long, int) args");
+
+    assertEquals(
+        2,
+        countThreadSleep(insns, SLEEP_JI_DESC),
+        "guarded Thread.sleep(JI)V emits one direct and one wrapped original call");
+    assertTrue(countOpcode(insns, Opcodes.IFLT) >= 2, "expected millis/nanos invalid guards");
+    assertTrue(countOpcode(insns, Opcodes.IF_ICMPGT) >= 1, "expected nanos upper-bound guard");
+    assertTrue(countOpcode(insns, Opcodes.IFNE) >= 2, "expected non-zero duration guards");
   }
 
   @Test
@@ -93,7 +122,10 @@ class ThreadSleepRewritingVisitorTest {
     List<InstructionRecord> insns = rewriteAndScan(MultipleSleepFixture.class, "doWork");
 
     int sleepCount = countThreadSleep(insns);
-    assertEquals(3, sleepCount, "fixture should have three Thread.sleep call sites");
+    assertEquals(
+        6,
+        sleepCount,
+        "three guarded primitive sleep sites emit direct and wrapped original calls");
 
     int captureCount = countInvokeStatic(insns, "captureForSleep", CAPTURE_FOR_SLEEP_DESC);
     int finishCount = countInvokeStatic(insns, "finish", FINISH_DESC);
@@ -154,30 +186,22 @@ class ThreadSleepRewritingVisitorTest {
   @Test
   void classWithoutSleepCall_scanReturnsFalse() throws IOException {
     assertFalse(
-        ThreadSleepScanner.scan(new ClassReader(classBytes(OtherInvokeFixture.class))),
+        ThreadSleepScanner.scan(classBytes(OtherInvokeFixture.class)),
         "scanner must not flag a class with no Thread.sleep call sites");
   }
 
   @Test
-  void timeUnitSleep_isWrappedWithCaptureAndFinishAndPreservesReceiverAndArg() throws IOException {
+  void timeUnitSleep_isNotRewritten() throws IOException {
     List<InstructionRecord> insns = rewriteAndScan(TimeUnitSleepFixture.class, "doSleep");
 
     int sleepIdx = indexOfTimeUnitSleep(insns);
     assertTrue(sleepIdx >= 0, "expected INVOKEVIRTUAL TimeUnit.sleep(J)V to be present");
 
-    int captureIdx = indexOfInvokeStatic(insns, "captureForSleep", CAPTURE_FOR_SLEEP_DESC);
-    assertTrue(
-        captureIdx >= 0 && captureIdx < sleepIdx, "captureForSleep must precede TimeUnit.sleep");
-
-    int aloadIdx = previousOpcode(insns, sleepIdx, Opcodes.ALOAD);
-    int lloadIdx = previousOpcode(insns, sleepIdx, Opcodes.LLOAD);
-    assertTrue(aloadIdx >= 0 && lloadIdx >= 0 && aloadIdx < lloadIdx);
-
-    int finishCount = countInvokeStatic(insns, "finish", FINISH_DESC);
     assertEquals(
-        2,
-        finishCount,
-        "expected two finish calls (normal exit + exception handler) per sleep site");
+        0,
+        countInvokeStatic(insns, "captureForSleep", CAPTURE_FOR_SLEEP_DESC),
+        "TimeUnit.sleep is instrumented at the bootstrap method boundary instead");
+    assertEquals(0, countInvokeStatic(insns, "finish", FINISH_DESC));
   }
 
   // ------------------------------------------------------------------------------------------
@@ -368,6 +392,11 @@ class ThreadSleepRewritingVisitorTest {
                 r.methodDescriptor = descriptor;
                 result.add(r);
               }
+
+              @Override
+              public void visitJumpInsn(final int opcode, final net.bytebuddy.jar.asm.Label label) {
+                result.add(InstructionRecord.simple(opcode));
+              }
             };
           }
         },
@@ -377,6 +406,20 @@ class ThreadSleepRewritingVisitorTest {
 
   private static int indexOfThreadSleep(final List<InstructionRecord> insns, final String desc) {
     for (int i = 0; i < insns.size(); i++) {
+      InstructionRecord r = insns.get(i);
+      if (r.opcode == Opcodes.INVOKESTATIC
+          && THREAD_INTERNAL.equals(r.methodOwner)
+          && "sleep".equals(r.methodName)
+          && desc.equals(r.methodDescriptor)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static int nextThreadSleep(
+      final List<InstructionRecord> insns, final int from, final String desc) {
+    for (int i = from; i < insns.size(); i++) {
       InstructionRecord r = insns.get(i);
       if (r.opcode == Opcodes.INVOKESTATIC
           && THREAD_INTERNAL.equals(r.methodOwner)
@@ -410,6 +453,19 @@ class ThreadSleepRewritingVisitorTest {
           && (SLEEP_J_DESC.equals(r.methodDescriptor)
               || SLEEP_JI_DESC.equals(r.methodDescriptor)
               || SLEEP_DURATION_DESC.equals(r.methodDescriptor))) {
+        n++;
+      }
+    }
+    return n;
+  }
+
+  private static int countThreadSleep(final List<InstructionRecord> insns, final String desc) {
+    int n = 0;
+    for (InstructionRecord r : insns) {
+      if (r.opcode == Opcodes.INVOKESTATIC
+          && THREAD_INTERNAL.equals(r.methodOwner)
+          && "sleep".equals(r.methodName)
+          && desc.equals(r.methodDescriptor)) {
         n++;
       }
     }

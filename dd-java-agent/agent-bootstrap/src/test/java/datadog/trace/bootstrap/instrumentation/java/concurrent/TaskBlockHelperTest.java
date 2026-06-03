@@ -44,36 +44,12 @@ class TaskBlockHelperTest {
   }
 
   @Test
-  void capture_returnsNull_withoutActiveSpan() {
+  void capture_recordsEntryTimingWithoutActiveSpan() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-
-    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, null));
-  }
-
-  @Test
-  void capture_returnsNull_whenSpanContextIsNotProfilerContext() {
-    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    AgentSpan nonProfilerSpan = mock(AgentSpan.class);
-    AgentSpanContext nonProfilerCtx = mock(AgentSpanContext.class);
-    when(nonProfilerSpan.context()).thenReturn(nonProfilerCtx);
-
-    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, nonProfilerSpan));
-  }
-
-  @Test
-  void capture_recordsEntryTimingWithoutSpanIds() {
-    // Span identity is captured natively at the recordTaskBlock JNI boundary; the Java-side
-    // State only retains the fields the native side cannot recompute (start tick, start nanos,
-    // blocker). The presence of an active span on the thread is still gated by capture() so we
-    // skip the JNI hop for span-less intervals.
-    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    AgentSpan span = mock(AgentSpan.class);
-    ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(ctx);
     when(profiling.getCurrentTicks()).thenReturn(START_TICKS);
 
     long before = System.nanoTime();
-    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span);
+    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, null);
     long after = System.nanoTime();
 
     assertNotNull(state);
@@ -87,18 +63,53 @@ class TaskBlockHelperTest {
   }
 
   @Test
-  void capture_deferredRecordsEntryTimingAndSpanIds() {
+  void capture_returnsNull_whenSpanContextIsNotProfilerContext() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    AgentSpan nonProfilerSpan = mock(AgentSpan.class);
+    AgentSpanContext nonProfilerCtx = mock(AgentSpanContext.class);
+    when(nonProfilerSpan.context()).thenReturn(nonProfilerCtx);
+
+    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, nonProfilerSpan));
+  }
+
+  @Test
+  void capture_returnsNullWithActiveSpan() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    AgentSpan span = mock(AgentSpan.class);
+    ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
+    when(span.context()).thenReturn(ctx);
+    when(ctx.getSpanId()).thenReturn(SPAN_ID);
+
+    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span);
+
+    assertNull(state);
+    verify(profiling, never()).getCurrentTicks();
+  }
+
+  @Test
+  void capture_deferredReturnsNullWithActiveSpan() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
     when(span.context()).thenReturn(ctx);
     when(ctx.getSpanId()).thenReturn(SPAN_ID);
     when(ctx.getRootSpanId()).thenReturn(ROOT_SPAN_ID);
+
+    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span, true);
+
+    assertNull(state);
+    verify(profiling, never()).getCurrentTicks();
+    verify(profiling, never()).blockEnter(anyInt());
+  }
+
+  @Test
+  void capture_deferredRecordsEntryTimingWithZeroContext() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     when(profiling.getCurrentTicks()).thenReturn(START_TICKS);
     when(profiling.blockEnter(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING))
         .thenReturn(BLOCK_TOKEN);
 
-    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span, true);
+    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, null, true);
 
     assertNotNull(state);
     assertEquals(START_TICKS, state.startTicks);
@@ -106,20 +117,15 @@ class TaskBlockHelperTest {
     assertTrue(state.deferred);
     assertFalse(state.isVirtual);
     assertEquals(BLOCK_TOKEN, state.blockToken);
-    assertEquals(SPAN_ID, state.spanId);
-    assertEquals(ROOT_SPAN_ID, state.rootSpanId);
+    assertEquals(0L, state.spanId);
+    assertEquals(0L, state.rootSpanId);
     verify(profiling).blockEnter(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING);
   }
 
   @Test
-  void capture_deferredSleepOnVirtualThreadUsesVirtualState() throws Exception {
+  void capture_deferredSleepOnVirtualThreadUsesZeroContextVirtualState() throws Exception {
     assumeTrue(hasVirtualThreads(), "virtual threads are not available on this JVM");
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    AgentSpan span = mock(AgentSpan.class);
-    ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(ctx);
-    when(ctx.getSpanId()).thenReturn(SPAN_ID);
-    when(ctx.getRootSpanId()).thenReturn(ROOT_SPAN_ID);
     when(profiling.getCurrentTicks()).thenReturn(START_TICKS);
 
     AtomicReference<TaskBlockHelper.State> stateRef = new AtomicReference<>();
@@ -128,7 +134,7 @@ class TaskBlockHelperTest {
         startVirtualThread(
             () -> {
               try {
-                stateRef.set(TaskBlockHelper.capture(BLOCKER, profiling, span, true));
+                stateRef.set(TaskBlockHelper.capture(BLOCKER, profiling, null, true));
               } catch (Throwable error) {
                 errorRef.set(error);
               }
@@ -142,13 +148,13 @@ class TaskBlockHelperTest {
     assertNotNull(state);
     assertTrue(state.isVirtual);
     assertFalse(state.deferred);
-    assertEquals(SPAN_ID, state.spanId);
-    assertEquals(ROOT_SPAN_ID, state.rootSpanId);
+    assertEquals(0L, state.spanId);
+    assertEquals(0L, state.rootSpanId);
 
     waitUntilEligible(state);
     TaskBlockHelper.finish(state);
 
-    verify(profiling).recordTaskBlockWithContext(START_TICKS, BLOCKER, 0L, SPAN_ID, ROOT_SPAN_ID);
+    verify(profiling).recordTaskBlockWithContext(START_TICKS, BLOCKER, 0L, 0L, 0L);
     verify(profiling, never())
         .enqueueTaskBlock(
             anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyInt());
@@ -198,8 +204,8 @@ class TaskBlockHelperTest {
             System.nanoTime() + 60_000_000_000L,
             BLOCKER,
             true,
-            SPAN_ID,
-            ROOT_SPAN_ID,
+            0L,
+            0L,
             BLOCK_TOKEN);
 
     TaskBlockHelper.finish(state);
@@ -227,7 +233,24 @@ class TaskBlockHelperTest {
   }
 
   @Test
-  void finish_emitsVirtualTaskBlockWithSpanRootOnlyContext() {
+  void finish_emitsVirtualTaskBlockWithZeroContext() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    TaskBlockHelper.State state =
+        new TaskBlockHelper.State(
+            profiling,
+            START_TICKS,
+            System.nanoTime() - 2 * TaskBlockHelper.MIN_TASK_BLOCK_NANOS,
+            BLOCKER,
+            0L,
+            0L);
+
+    TaskBlockHelper.finish(state);
+
+    verify(profiling).recordTaskBlockWithContext(START_TICKS, BLOCKER, 0L, 0L, 0L);
+  }
+
+  @Test
+  void finish_skipsVirtualTaskBlockWithActiveSpanContext() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     TaskBlockHelper.State state =
         new TaskBlockHelper.State(
@@ -240,11 +263,11 @@ class TaskBlockHelperTest {
 
     TaskBlockHelper.finish(state);
 
-    verify(profiling).recordTaskBlockWithContext(START_TICKS, BLOCKER, 0L, SPAN_ID, ROOT_SPAN_ID);
+    verifyNoInteractions(profiling);
   }
 
   @Test
-  void finish_enqueuesDeferredTaskBlockWithEntrySpanRootOnlyContext() {
+  void finish_enqueuesDeferredTaskBlockWithZeroContext() {
     long anchorSampleId = 101L;
     long suppressedSampleCount = 3L;
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
@@ -268,8 +291,8 @@ class TaskBlockHelperTest {
             System.nanoTime() - 2 * TaskBlockHelper.MIN_TASK_BLOCK_NANOS,
             BLOCKER,
             true,
-            SPAN_ID,
-            ROOT_SPAN_ID,
+            0L,
+            0L,
             BLOCK_TOKEN);
 
     TaskBlockHelper.finish(state);
@@ -279,8 +302,8 @@ class TaskBlockHelperTest {
             eq(START_TICKS),
             anyLong(),
             eq(BLOCKER),
-            eq(SPAN_ID),
-            eq(ROOT_SPAN_ID),
+            eq(0L),
+            eq(0L),
             eq(anchorSampleId),
             eq(suppressedSampleCount),
             eq(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING));

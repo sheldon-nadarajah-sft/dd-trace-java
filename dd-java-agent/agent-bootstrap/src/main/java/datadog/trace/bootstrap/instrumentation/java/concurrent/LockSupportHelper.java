@@ -1,5 +1,6 @@
 package datadog.trace.bootstrap.instrumentation.java.concurrent;
 
+import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
@@ -36,10 +37,9 @@ import java.util.WeakHashMap;
  * the native park entry/exit pair and instead:
  *
  * <ol>
- *   <li>Capture the active span/root ids on the Java side at block entry.
- *   <li>On unpark, call {@link ProfilingContextIntegration#recordTaskBlockWithContext} which passes
- *       those ids explicitly to the native deferred-capture path, bypassing OTEP TLS. This path is
- *       span/root-only; custom profiling context attributes are not propagated.
+ *   <li>Skip active-span parks because native TaskBlock eligibility rejects them.
+ *   <li>For spanless parks, call {@link ProfilingContextIntegration#recordTaskBlockWithContext}
+ *       with zero span/root ids, bypassing carrier-scoped OTEP TLS.
  * </ol>
  */
 public final class LockSupportHelper {
@@ -76,7 +76,7 @@ public final class LockSupportHelper {
     /** Root span ID captured at block entry; only meaningful when {@code isVirtual == true}. */
     public final long rootSpanId;
 
-    /** Constructor for platform threads: no span context captured here (OTEP TLS used instead). */
+    /** Constructor for platform threads: zero context is captured natively at park entry. */
     public ParkState(ProfilingContextIntegration profiling, long blockerHash) {
       this.profiling = profiling;
       this.blockerHash = blockerHash;
@@ -111,34 +111,26 @@ public final class LockSupportHelper {
       return null;
     }
     long blockerHash = blocker != null ? System.identityHashCode(blocker) : 0L;
-    // Skip native parkEnter0/parkExit0 JNI when no span is active — native would discard the
-    // interval at parkExit() anyway (zero-span eligibility check). Shared by both branches below.
-    ProfilerContext ctx = ProfilerContexts.of(AgentTracer.activeSpan());
-    if (ctx == null) {
-      // No active span - nothing to record.
-      UNPARKING_SPAN.remove(Thread.currentThread());
+    if (hasActiveTraceContext()) {
       return null;
     }
     if (VirtualThreads.isCurrent()) {
       // Virtual thread: skip native parkEnter0 (carrier-scoped TLS is unsafe).
-      // Capture span/root ids now so we can pass them explicitly on unpark.
       long startTicks;
       try {
         startTicks = profiling.getCurrentTicks();
       } catch (Throwable ignored) {
-        UNPARKING_SPAN.remove(Thread.currentThread());
         return null;
       }
-      return new ParkState(
-          profiling, blockerHash, startTicks, ctx.getSpanId(), ctx.getRootSpanId());
+      return new ParkState(profiling, blockerHash, startTicks, 0L, 0L);
     }
 
+    // Platform thread: native snapshots the zero OTEP context at parkEnter and applies the
+    // same TaskBlock eligibility rule at parkExit.
     try {
       profiling.parkEnter();
     } catch (Throwable ignored) {
       // parkEnter failed (e.g. profiler not yet initialised, JNI error); do not track this park.
-      // Drain any stale unblocking-span entry so it is not mis-attributed to the next park.
-      UNPARKING_SPAN.remove(Thread.currentThread());
       return null;
     }
     return new ParkState(profiling, blockerHash);
@@ -162,8 +154,8 @@ public final class LockSupportHelper {
       return;
     }
     if (state.isVirtual) {
-      // Virtual thread: emit via explicit-context path if a span was active at entry.
-      if (state.spanId != 0L) {
+      // Virtual thread: emit via explicit zero-context path.
+      if (state.spanId == 0L) {
         try {
           state.profiling.recordTaskBlockWithContext(
               state.startTicks,
@@ -193,5 +185,14 @@ public final class LockSupportHelper {
       return;
     }
     UNPARKING_SPAN.put(thread, ctx.getSpanId());
+  }
+
+  private static boolean hasActiveTraceContext() {
+    AgentSpan span = AgentTracer.activeSpan();
+    if (span == null) {
+      return false;
+    }
+    ProfilerContext ctx = ProfilerContexts.of(span);
+    return ctx == null || ctx.getSpanId() != 0L;
   }
 }

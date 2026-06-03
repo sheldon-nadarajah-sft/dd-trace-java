@@ -1,9 +1,5 @@
 package com.datadog.smoketest.profiling;
 
-import io.opentracing.Scope;
-import io.opentracing.Span;
-import io.opentracing.Tracer;
-import io.opentracing.util.GlobalTracer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -12,7 +8,7 @@ public final class SynchronizedContentionForkedApp {
   private static final Object BLOCK_LOCK = new Object();
 
   public static void main(final String[] args) throws Exception {
-    SynchronizedContentionForkedApp app = new SynchronizedContentionForkedApp(GlobalTracer.get());
+    SynchronizedContentionForkedApp app = new SynchronizedContentionForkedApp();
     for (int i = 0; i < REPETITIONS; i++) {
       app.runBlockScenario();
       app.runInstanceMethodScenario();
@@ -21,12 +17,9 @@ public final class SynchronizedContentionForkedApp {
     Thread.sleep(1500);
   }
 
-  private final Tracer tracer;
   private final InstanceLockTarget instanceTarget = new InstanceLockTarget();
 
-  private SynchronizedContentionForkedApp(final Tracer tracer) {
-    this.tracer = tracer;
-  }
+  private SynchronizedContentionForkedApp() {}
 
   private void runBlockScenario() throws Exception {
     CountDownLatch holderIn = new CountDownLatch(1);
@@ -48,13 +41,9 @@ public final class SynchronizedContentionForkedApp {
     holder.start();
     holderIn.await();
 
-    Span span = tracer.buildSpan("sync.block").start();
-    try (Scope scope = tracer.activateSpan(span)) {
-      synchronized (BLOCK_LOCK) {
-        // entry-queue wait is the TaskBlock interval
-      }
-    } finally {
-      span.finish();
+    Thread.currentThread().setName("sync-block-contender");
+    synchronized (BLOCK_LOCK) {
+      // entry-queue wait is the TaskBlock interval
     }
     holderOut.countDown();
     holder.join();
@@ -69,12 +58,8 @@ public final class SynchronizedContentionForkedApp {
     holder.start();
     holderIn.await();
 
-    Span span = tracer.buildSpan("sync.instance-method").start();
-    try (Scope scope = tracer.activateSpan(span)) {
-      instanceTarget.contend();
-    } finally {
-      span.finish();
-    }
+    Thread.currentThread().setName("sync-instance-contender");
+    instanceTarget.contend();
     holderOut.countDown();
     holder.join();
   }
@@ -88,12 +73,8 @@ public final class SynchronizedContentionForkedApp {
     holder.start();
     holderIn.await();
 
-    Span span = tracer.buildSpan("sync.static-method").start();
-    try (Scope scope = tracer.activateSpan(span)) {
-      StaticLockTarget.contend();
-    } finally {
-      span.finish();
-    }
+    Thread.currentThread().setName("sync-static-contender");
+    StaticLockTarget.contend();
     holderOut.countDown();
     holder.join();
   }

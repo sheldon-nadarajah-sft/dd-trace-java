@@ -177,11 +177,10 @@ class LockSupportProfilingInstrumentationTest {
 
   @Test
   void parkAdvice_captureState_callsParkEnterAndRecordsBlocker() {
-    // Span identity is no longer surfaced through ParkState — it is read natively from the OTEP
-    // TLS sidecar inside ProfiledThread::parkEnter. The Java-side ParkState only needs to retain
-    // the blocker hash so parkExit can pair the eventual TaskBlock with the right monitor.
+    // TaskBlock emission is only eligible when the parked thread has no active trace context.
+    // ParkState only needs to retain the blocker hash so parkExit can pair the eventual TaskBlock
+    // with the right monitor.
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    installActiveProfilerSpan();
     Object blocker = new Object();
 
     LockSupportHelper.ParkState state = LockSupportHelper.captureState(blocker, profiling);
@@ -194,7 +193,6 @@ class LockSupportProfilingInstrumentationTest {
   @Test
   void parkAdvice_captureState_nullBlocker_recordsZeroHash() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    installActiveProfilerSpan();
 
     LockSupportHelper.ParkState state = LockSupportHelper.captureState(null, profiling);
 
@@ -204,8 +202,9 @@ class LockSupportProfilingInstrumentationTest {
   }
 
   @Test
-  void parkAdvice_captureState_withoutActiveSpan_doesNotCallParkEnter() {
+  void parkAdvice_captureState_withActiveSpan_doesNotCallParkEnter() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    installActiveProfilerSpan();
 
     LockSupportHelper.ParkState state = LockSupportHelper.captureState(new Object(), profiling);
 
@@ -339,6 +338,7 @@ class LockSupportProfilingInstrumentationTest {
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext context = mock(ProfilerSpanContext.class);
     when(span.spanContext()).thenReturn(context);
+    when(context.getSpanId()).thenReturn(12345L);
     AgentTracer.forceRegister(mockTracerWithActiveSpan(span));
   }
 

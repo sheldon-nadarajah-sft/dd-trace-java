@@ -10,7 +10,6 @@ import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.jar.asm.ClassReader;
 import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
@@ -35,33 +34,33 @@ class ThreadSleepScannerTest {
   void threadSleepJ_detected() throws IOException {
     assertTrue(
         ThreadSleepScanner.scan(
-            classReader(ThreadSleepRewritingVisitorTest.SingleSleepJFixture.class)));
+            classBytes(ThreadSleepRewritingVisitorTest.SingleSleepJFixture.class)));
   }
 
   @Test
   void threadSleepJI_detected() throws IOException {
     assertTrue(
         ThreadSleepScanner.scan(
-            classReader(ThreadSleepRewritingVisitorTest.SingleSleepJIFixture.class)));
+            classBytes(ThreadSleepRewritingVisitorTest.SingleSleepJIFixture.class)));
   }
 
   @Test
   void threadSleepDuration_detected() {
-    assertTrue(ThreadSleepScanner.scan(new ClassReader(sleepDurationFixtureBytes())));
+    assertTrue(ThreadSleepScanner.scan(sleepDurationFixtureBytes()));
   }
 
   @Test
-  void timeUnitSleep_detected() throws IOException {
-    assertTrue(
+  void timeUnitSleep_notDetected() throws IOException {
+    assertFalse(
         ThreadSleepScanner.scan(
-            classReader(ThreadSleepRewritingVisitorTest.TimeUnitSleepFixture.class)));
+            classBytes(ThreadSleepRewritingVisitorTest.TimeUnitSleepFixture.class)));
   }
 
   @Test
   void multipleSleepSites_detected() throws IOException {
     assertTrue(
         ThreadSleepScanner.scan(
-            classReader(ThreadSleepRewritingVisitorTest.MultipleSleepFixture.class)));
+            classBytes(ThreadSleepRewritingVisitorTest.MultipleSleepFixture.class)));
   }
 
   // ---------------------------------------------------------------------------------
@@ -72,22 +71,22 @@ class ThreadSleepScannerTest {
   void noSleepCall_notDetected() throws IOException {
     assertFalse(
         ThreadSleepScanner.scan(
-            classReader(ThreadSleepRewritingVisitorTest.OtherInvokeFixture.class)));
+            classBytes(ThreadSleepRewritingVisitorTest.OtherInvokeFixture.class)));
   }
 
   // ---------------------------------------------------------------------------------
-  // Fail-open cases: containsThreadSleepCallSite() must return true
+  // Unavailable class bytes fail closed; unreadable or malformed bytes fail open.
   // ---------------------------------------------------------------------------------
 
   @Test
-  void nullClassLoader_returnsTrue() {
-    assertTrue(
+  void nullClassLoader_returnsFalse() {
+    assertFalse(
         ThreadSleepScanner.containsThreadSleepCallSite(
             null, TypeDescription.ForLoadedType.of(Object.class)));
   }
 
   @Test
-  void resourceNotFound_returnsTrue() {
+  void resourceNotFound_returnsFalse() {
     ClassLoader emptyLoader =
         new ClassLoader() {
           @Override
@@ -95,7 +94,7 @@ class ThreadSleepScannerTest {
             return null;
           }
         };
-    assertTrue(
+    assertFalse(
         ThreadSleepScanner.containsThreadSleepCallSite(
             emptyLoader, TypeDescription.ForLoadedType.of(Object.class)));
   }
@@ -119,11 +118,16 @@ class ThreadSleepScannerTest {
             failingLoader, TypeDescription.ForLoadedType.of(Object.class)));
   }
 
+  @Test
+  void malformedBytes_returnTrue() {
+    assertTrue(ThreadSleepScanner.scan(new byte[] {0x00, 0x01}));
+  }
+
   // ---------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------
 
-  private static ClassReader classReader(Class<?> clazz) throws IOException {
+  private static byte[] classBytes(Class<?> clazz) throws IOException {
     String resource = clazz.getName().replace('.', '/') + ".class";
     try (InputStream in = clazz.getClassLoader().getResourceAsStream(resource)) {
       assertNotNull(in, "Could not load test fixture: " + clazz.getName());
@@ -133,7 +137,7 @@ class ThreadSleepScannerTest {
       while ((n = in.read(buf)) > 0) {
         out.write(buf, 0, n);
       }
-      return new ClassReader(out.toByteArray());
+      return out.toByteArray();
     }
   }
 

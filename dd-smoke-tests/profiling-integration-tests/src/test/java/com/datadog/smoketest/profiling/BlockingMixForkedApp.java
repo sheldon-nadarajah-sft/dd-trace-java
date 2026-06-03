@@ -1,17 +1,13 @@
 package com.datadog.smoketest.profiling;
 
-import io.opentracing.Scope;
-import io.opentracing.Span;
-import io.opentracing.Tracer;
-import io.opentracing.util.GlobalTracer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
 public final class BlockingMixForkedApp {
-  private static final String OP_SLEEP = "blockingmix.sleep";
-  private static final String OP_PARK = "blockingmix.park";
-  private static final String OP_SYNC = "blockingmix.sync";
+  private static final String THREAD_SLEEP = "blockingmix-sleep";
+  private static final String THREAD_PARK = "blockingmix-park";
+  private static final String THREAD_SYNC = "blockingmix-sync";
 
   private static final int SLEEP_ITERATIONS = 20;
   private static final int PARK_ITERATIONS = 20;
@@ -21,41 +17,31 @@ public final class BlockingMixForkedApp {
   private static final long SYNC_HOLD_MILLIS = 50L;
 
   public static void main(String[] args) throws Exception {
-    BlockingMixForkedApp app = new BlockingMixForkedApp(GlobalTracer.get());
+    BlockingMixForkedApp app = new BlockingMixForkedApp();
+    Thread.currentThread().setName(THREAD_SLEEP);
     app.runSleeps();
+    Thread.sleep(1500);
+    Thread.currentThread().setName(THREAD_PARK);
     app.runParks();
+    Thread.currentThread().setName(THREAD_SYNC);
     app.runSyncContention();
     Thread.sleep(1500);
   }
 
-  private final Tracer tracer;
-
-  private BlockingMixForkedApp(Tracer tracer) {
-    this.tracer = tracer;
-  }
+  private BlockingMixForkedApp() {}
 
   private void runSleeps() throws InterruptedException {
     for (int i = 0; i < SLEEP_ITERATIONS; i++) {
-      Span span = tracer.buildSpan(OP_SLEEP).start();
-      try (Scope scope = tracer.activateSpan(span)) {
-        Thread.sleep(SLEEP_MILLIS);
-      } finally {
-        span.finish();
-      }
+      Thread.sleep(SLEEP_MILLIS);
     }
   }
 
   private void runParks() {
     for (int i = 0; i < PARK_ITERATIONS; i++) {
-      Span span = tracer.buildSpan(OP_PARK).start();
-      try (Scope scope = tracer.activateSpan(span)) {
-        long deadline = System.nanoTime() + PARK_NANOS;
-        long remaining;
-        while ((remaining = deadline - System.nanoTime()) > 0) {
-          LockSupport.parkNanos(remaining);
-        }
-      } finally {
-        span.finish();
+      long deadline = System.nanoTime() + PARK_NANOS;
+      long remaining;
+      while ((remaining = deadline - System.nanoTime()) > 0) {
+        LockSupport.parkNanos(remaining);
       }
     }
   }
@@ -82,24 +68,18 @@ public final class BlockingMixForkedApp {
       holder.start();
       holderHasLock.await();
 
-      Span span = tracer.buildSpan(OP_SYNC).start();
-      try (Scope scope = tracer.activateSpan(span)) {
-        Thread.sleep(SYNC_HOLD_MILLIS / 2);
-        new Thread(
-                () -> {
-                  try {
-                    Thread.sleep(SYNC_HOLD_MILLIS / 2);
-                  } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                  }
-                  holderMayRelease.countDown();
-                })
-            .start();
-        synchronized (lock) {
-          // Acquire after contention.
-        }
-      } finally {
-        span.finish();
+      new Thread(
+              () -> {
+                try {
+                  Thread.sleep(SYNC_HOLD_MILLIS);
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                }
+                holderMayRelease.countDown();
+              })
+          .start();
+      synchronized (lock) {
+        // Acquire after contention.
       }
       holder.join();
     }

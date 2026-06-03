@@ -12,9 +12,12 @@ public final class ThreadSleepTaskBlockForkedApp {
 
   public static void main(String[] args) throws Exception {
     ThreadSleepTaskBlockForkedApp app = new ThreadSleepTaskBlockForkedApp(GlobalTracer.get());
+    Thread.currentThread().setName("threadsleep-active");
     app.runActiveSpanSleeps();
-    app.runSpanlessSleeps();
+    Thread.currentThread().setName("threadsleep-short");
     app.runSubThresholdSleeps();
+    Thread.currentThread().setName("threadsleep-spanless");
+    app.runSpanlessSleeps();
     Thread.sleep(1500);
   }
 

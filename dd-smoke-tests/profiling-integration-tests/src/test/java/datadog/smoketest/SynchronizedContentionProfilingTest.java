@@ -19,16 +19,15 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 /**
  * Smoke test for native synchronized-contention TaskBlock coverage. Asserts that block-level {@code
  * synchronized(obj){}} and method-level {@code synchronized} contention emit {@code
- * datadog.TaskBlock} events with a non-zero {@code blocker} field through the native JVMTI {@code
- * MonitorContendedEnter}/{@code MonitorContendedEntered} path.
+ * datadog.TaskBlock} zero-context events with a non-zero {@code blocker} field through the native
+ * JVMTI {@code MonitorContendedEnter}/{@code MonitorContendedEntered} path.
  */
 @DisabledOnJ9
 final class SynchronizedContentionProfilingTest
     extends TaskBlockProfilingTestBase<SynchronizedContentionProfilingTest.JfrStats> {
 
   @Test
-  @DisplayName(
-      "synchronized block and method contention emit span-attributed native TaskBlock events")
+  @DisplayName("synchronized block and method contention emit zero-context native TaskBlock events")
   void synchronizedContentionEmitsTaskBlockEvents() throws Exception {
     Process targetProcess = createProcessBuilder().start();
     checkProcessSuccessfullyEnd(targetProcess, logFilePath);
@@ -46,10 +45,10 @@ final class SynchronizedContentionProfilingTest
         stats.staticMethodScenarioCount > 0,
         "Expected TaskBlock events for synchronized static-method contention");
 
-    // Every emitted event must carry a valid span context.
-    assertFalse(stats.hasZeroSpanId, "TaskBlock events must have non-zero spanId");
+    // Every emitted event must be spanless; active-span monitor blocks are rejected by native.
+    assertFalse(stats.hasNonZeroSpanId, "TaskBlock events must carry zero spanId");
     assertFalse(
-        stats.hasZeroLocalRootSpanId, "TaskBlock events must have non-zero localRootSpanId");
+        stats.hasNonZeroLocalRootSpanId, "TaskBlock events must carry zero localRootSpanId");
     assertFalse(stats.hasMissingEventThread, "TaskBlock events must resolve Event Thread");
 
     // The blocker field must identify the contested monitor (non-zero).
@@ -104,8 +103,8 @@ final class SynchronizedContentionProfilingTest
     long staticMethodScenarioCount;
     long blockersWithNonZeroValue;
     final Set<Long> distinctBlockerValues = new HashSet<>();
-    boolean hasZeroSpanId;
-    boolean hasZeroLocalRootSpanId;
+    boolean hasNonZeroSpanId;
+    boolean hasNonZeroLocalRootSpanId;
     boolean hasMissingEventThread;
 
     void add(final IItemCollection events) {
@@ -115,27 +114,26 @@ final class SynchronizedContentionProfilingTest
         IMemberAccessor<IQuantity, IItem> rootSpanIdAcc =
             LOCAL_ROOT_SPAN_ID.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> blockerAcc = BLOCKER.getAccessor(items.getType());
-        IMemberAccessor<String, IItem> operationAcc = OPERATION.getAccessor(items.getType());
         IMemberAccessor<String, IItem> threadAcc =
             JdkAttributes.EVENT_THREAD_NAME.getAccessor(items.getType());
         for (IItem item : items) {
-          String op = operationAcc == null ? null : operationAcc.getMember(item);
-          if (!"sync.block".equals(op)
-              && !"sync.instance-method".equals(op)
-              && !"sync.static-method".equals(op)) {
+          String thread = threadAcc == null ? null : threadAcc.getMember(item);
+          if (!"sync-block-contender".equals(thread)
+              && !"sync-instance-contender".equals(thread)
+              && !"sync-static-contender".equals(thread)) {
             continue;
           }
-          if ("sync.block".equals(op)) blockScenarioCount++;
-          else if ("sync.instance-method".equals(op)) instanceMethodScenarioCount++;
+          if ("sync-block-contender".equals(thread)) blockScenarioCount++;
+          else if ("sync-instance-contender".equals(thread)) instanceMethodScenarioCount++;
           else staticMethodScenarioCount++;
 
           if (spanIdAcc != null) {
             long spanId = spanIdAcc.getMember(item).longValue();
-            hasZeroSpanId |= spanId == 0;
+            hasNonZeroSpanId |= spanId != 0;
           }
           if (rootSpanIdAcc != null) {
             long rootId = rootSpanIdAcc.getMember(item).longValue();
-            hasZeroLocalRootSpanId |= rootId == 0;
+            hasNonZeroLocalRootSpanId |= rootId != 0;
           }
           if (blockerAcc != null) {
             long blocker = blockerAcc.getMember(item).longValue();
@@ -144,7 +142,6 @@ final class SynchronizedContentionProfilingTest
               distinctBlockerValues.add(blocker);
             }
           }
-          String thread = threadAcc == null ? null : threadAcc.getMember(item);
           hasMissingEventThread |= thread == null || thread.isEmpty();
         }
       }

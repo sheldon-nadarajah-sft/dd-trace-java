@@ -52,8 +52,8 @@ import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
  *       regression in the Java helper paths vs. the native JVMTI path or at overlapping helper
  *       invocations.
  *   <li><b>BlockingMix demo</b>: the forked app is meant to be copy-pasted as a reproducer when
- *       triaging coverage issues. The runbook in the README comment at the top of the class lists
- *       JFR inspection commands and the expected operation-name distribution.
+ *       triaging coverage issues. The runbook below lists JFR inspection commands and the expected
+ *       scenario thread-name distribution.
  * </ol>
  *
  * <h3>Demo runbook (manual, off-CI)</h3>
@@ -67,14 +67,14 @@ import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
  *   # 2. Inspect populations
  *   jfr summary {dumpDir}/*.jfr | grep -E "datadog.TaskBlock|wall=" -A1
  *
- *   # 3. List per-operation counts
+ *   # 3. List per-scenario thread counts
  *   jfr print --events "datadog.TaskBlock" {dumpDir}/*.jfr \
- *       | grep -oE "_dd.trace.operation = \"[^\"]+\"" | sort | uniq -c
+ *       | grep -oE "eventThread = \\{[^}]+\\}" | sort | uniq -c
  *
  *   # 4. Expected (steady state):
- *   #     N=20 blockingmix.sleep
- *   #     N=20 blockingmix.park
- *   #     N=20 blockingmix.sync   (native JVMTI monitor callbacks)
+ *   #     N>=20 blockingmix-sleep
+ *   #     N=20  blockingmix-park
+ *   #     N=20  blockingmix-sync   (native JVMTI monitor callbacks)
  *
  *   # 5. Native counter snapshot:
  *   jfr print --events "datadog.DatadogProfilerConfig" {dumpDir}/*.jfr
@@ -91,15 +91,13 @@ final class BlockingMixTaskBlockProfilingTest {
       attr("startTime", "startTime", "startTime", NUMBER);
   private static final IAttribute<IQuantity> DURATION =
       attr("duration", "duration", "duration", NUMBER);
-  private static final IAttribute<String> OPERATION =
-      attr("_dd.trace.operation", "_dd.trace.operation", "_dd.trace.operation", PLAIN_TEXT);
   private static final IAttribute<String> EVENT_THREAD_NAME =
       attr(
           "eventThread.threadName", "eventThread.threadName", "eventThread.threadName", PLAIN_TEXT);
 
-  private static final String OP_SLEEP = "blockingmix.sleep";
-  private static final String OP_PARK = "blockingmix.park";
-  private static final String OP_SYNC = "blockingmix.sync";
+  private static final String THREAD_SLEEP = "blockingmix-sleep";
+  private static final String THREAD_PARK = "blockingmix-park";
+  private static final String THREAD_SYNC = "blockingmix-sync";
 
   private static final Path LOG_FILE_BASE =
       Paths.get(
@@ -137,13 +135,13 @@ final class BlockingMixTaskBlockProfilingTest {
 
     // ---- Smoke ----: every population must be present.
     assertTrue(
-        stats.countByOperation.getOrDefault(OP_SLEEP, 0L) > 0,
+        stats.countByThread.getOrDefault(THREAD_SLEEP, 0L) > 0,
         "Expected blockingmix.sleep TaskBlock events (thread-sleep call-site module)");
     assertTrue(
-        stats.countByOperation.getOrDefault(OP_PARK, 0L) > 0,
+        stats.countByThread.getOrDefault(THREAD_PARK, 0L) > 0,
         "Expected blockingmix.park TaskBlock events (existing lock-support module)");
     assertTrue(
-        stats.countByOperation.getOrDefault(OP_SYNC, 0L) > 0,
+        stats.countByThread.getOrDefault(THREAD_SYNC, 0L) > 0,
         "Expected blockingmix.sync TaskBlock events (native JVMTI monitor callbacks)");
 
     // ---- NoDoubleBracket ----: no two TaskBlock events on the same thread with overlapping
@@ -156,13 +154,13 @@ final class BlockingMixTaskBlockProfilingTest {
             + "same blocking population. First duplicate: "
             + stats.firstDuplicateDescription);
 
-    // ---- Span context ----: all events must carry non-zero span/root-span IDs.
+    // ---- Span context ----: all TaskBlock events in this workload must be spanless.
     assertFalse(
-        stats.hasZeroSpanId,
-        "TaskBlock events from the mixed workload must all carry non-zero spanId");
+        stats.hasNonZeroSpanId,
+        "TaskBlock events from the mixed workload must all carry zero spanId");
     assertFalse(
-        stats.hasZeroLocalRootSpanId,
-        "TaskBlock events from the mixed workload must all carry non-zero localRootSpanId");
+        stats.hasNonZeroLocalRootSpanId,
+        "TaskBlock events from the mixed workload must all carry zero localRootSpanId");
 
     // ---- Health ----: no instrumentation classloading or rewrite failures in the forked log.
     assertFalse(
@@ -305,9 +303,9 @@ final class BlockingMixTaskBlockProfilingTest {
   }
 
   private static final class JfrStats {
-    final Map<String, Long> countByOperation = new HashMap<>();
-    boolean hasZeroSpanId;
-    boolean hasZeroLocalRootSpanId;
+    final Map<String, Long> countByThread = new HashMap<>();
+    boolean hasNonZeroSpanId;
+    boolean hasNonZeroLocalRootSpanId;
     boolean hasDuplicateInterval;
     String firstDuplicateDescription;
 
@@ -321,7 +319,6 @@ final class BlockingMixTaskBlockProfilingTest {
       for (IItemIterable items : taskBlocks) {
         IMemberAccessor<IQuantity, IItem> span = SPAN_ID.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> root = LOCAL_ROOT_SPAN_ID.getAccessor(items.getType());
-        IMemberAccessor<String, IItem> op = OPERATION.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> startTime = START_TIME.getAccessor(items.getType());
         IMemberAccessor<String, IItem> threadName = EVENT_THREAD_NAME.getAccessor(items.getType());
         if (span == null || root == null) {
@@ -330,22 +327,20 @@ final class BlockingMixTaskBlockProfilingTest {
         for (IItem item : items) {
           long spanId = span.getMember(item).longValue();
           long rootSpanId = root.getMember(item).longValue();
-          String operation = op != null ? op.getMember(item) : null;
-          if (spanId == 0L) {
-            hasZeroSpanId = true;
+          String thread = threadName == null ? null : threadName.getMember(item);
+          if (!THREAD_SLEEP.equals(thread)
+              && !THREAD_PARK.equals(thread)
+              && !THREAD_SYNC.equals(thread)) {
             continue;
           }
-          if (rootSpanId == 0L) {
-            hasZeroLocalRootSpanId = true;
-          }
-          if (operation != null) {
-            countByOperation.merge(operation, 1L, Long::sum);
-          }
+          countByThread.merge(thread, 1L, Long::sum);
+          hasNonZeroSpanId |= spanId != 0L;
+          hasNonZeroLocalRootSpanId |= rootSpanId != 0L;
           if (startTime != null && threadName != null) {
-            String key = threadName.getMember(item) + "@" + startTime.getMember(item).longValue();
+            String key = thread + "@" + startTime.getMember(item).longValue();
             if (!seenIntervals.add(key) && firstDuplicateDescription == null) {
               hasDuplicateInterval = true;
-              firstDuplicateDescription = key + " op=" + operation;
+              firstDuplicateDescription = key;
             }
           }
         }

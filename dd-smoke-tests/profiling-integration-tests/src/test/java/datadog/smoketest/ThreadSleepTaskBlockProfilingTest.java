@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 import datadog.trace.api.config.ProfilingConfig;
 import java.io.File;
@@ -35,13 +34,14 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 /**
  * End-to-end smoke test for the {@code thread-sleep} instrumentation: forks a real JVM with {@code
- * -javaagent:} attached and asserts that {@code Thread.sleep} call sites under an active span emit
- * {@code datadog.TaskBlock} JFR events. The fixture deliberately mixes traced and untraced sleeps
- * and a sub-threshold sleep to exercise both the active-span and duration-filter fast paths in
- * {@link TaskBlockHelper}.
+ * -javaagent:} attached and asserts that spanless {@code Thread.sleep} call sites emit {@code
+ * datadog.TaskBlock} JFR events. The fixture deliberately mixes traced and untraced sleeps to
+ * verify that active-span sleeps are left to normal wall-clock samples while TaskBlock summarizes
+ * untraced blocked runs.
  *
  * <p>Runs on every JDK supported by the rest of the suite. The native JVMTI MonitorWait path covers
  * {@code Object.wait()}, not {@code Thread.sleep}, so this test is the direct coverage guard for
@@ -54,8 +54,6 @@ final class ThreadSleepTaskBlockProfilingTest {
   private static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId", "spanId", NUMBER);
   private static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID =
       attr("localRootSpanId", "localRootSpanId", "localRootSpanId", NUMBER);
-  private static final IAttribute<String> OPERATION =
-      attr("_dd.trace.operation", "_dd.trace.operation", "_dd.trace.operation", PLAIN_TEXT);
   private static final Path LOG_FILE_BASE =
       Paths.get(
           buildDirectory(),
@@ -83,7 +81,7 @@ final class ThreadSleepTaskBlockProfilingTest {
   }
 
   @Test
-  @DisplayName("Thread.sleep under an active span emits TaskBlock events with span context")
+  @DisplayName("Spanless Thread.sleep emits zero-context TaskBlock events")
   void threadSleepEmitsTaskBlockEvents() throws Exception {
     Process targetProcess = createProcessBuilder().start();
 
@@ -91,15 +89,14 @@ final class ThreadSleepTaskBlockProfilingTest {
 
     JfrStats stats = loadStats();
     assertTrue(
-        stats.activeSpanTaskBlockCount > 0,
-        "Expected datadog.TaskBlock events from traced Thread.sleep call sites");
-    assertFalse(stats.hasZeroSpanId, "Active-span TaskBlock events must carry non-zero spanId");
+        stats.spanlessTaskBlockCount > 0,
+        "Expected datadog.TaskBlock events from spanless Thread.sleep call sites");
+    assertFalse(stats.hasActiveSpanTaskBlock, "Active-span sleeps must not emit TaskBlock events");
+    assertFalse(stats.hasNonZeroSpanId, "Spanless TaskBlock events must carry zero spanId");
     assertFalse(
-        stats.hasZeroLocalRootSpanId,
-        "Active-span TaskBlock events must carry non-zero localRootSpanId");
-    assertTrue(
-        stats.hasExpectedOperation,
-        "Expected TaskBlock events tagged with the threadsleep.active span operation name");
+        stats.hasNonZeroLocalRootSpanId,
+        "Spanless TaskBlock events must carry zero localRootSpanId");
+    assertFalse(stats.hasMissingEventThread, "TaskBlock events must resolve Event Thread");
     assertFalse(
         logHasInstrumentationError(),
         "thread-sleep instrumentation produced classloading or rewrite errors in the forked log");
@@ -245,37 +242,37 @@ final class ThreadSleepTaskBlockProfilingTest {
 
   /** Aggregate counts/flags collected across all JFR streams produced by the forked process. */
   private static final class JfrStats {
-    long activeSpanTaskBlockCount;
-    boolean hasZeroSpanId;
-    boolean hasZeroLocalRootSpanId;
-    boolean hasExpectedOperation;
+    long spanlessTaskBlockCount;
+    boolean hasActiveSpanTaskBlock;
+    boolean hasNonZeroSpanId;
+    boolean hasNonZeroLocalRootSpanId;
+    boolean hasMissingEventThread;
 
     void add(IItemCollection events) {
       IItemCollection taskBlocks = events.apply(ItemFilters.type("datadog.TaskBlock"));
       for (IItemIterable items : taskBlocks) {
         IMemberAccessor<IQuantity, IItem> span = SPAN_ID.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> root = LOCAL_ROOT_SPAN_ID.getAccessor(items.getType());
-        IMemberAccessor<String, IItem> op = OPERATION.getAccessor(items.getType());
+        IMemberAccessor<String, IItem> eventThread =
+            JdkAttributes.EVENT_THREAD_NAME.getAccessor(items.getType());
         if (span == null || root == null) {
           continue;
         }
         for (IItem item : items) {
+          String threadName = eventThread == null ? null : eventThread.getMember(item);
+          if ("threadsleep-active".equals(threadName)) {
+            hasActiveSpanTaskBlock = true;
+            continue;
+          }
+          if (!"threadsleep-spanless".equals(threadName)) {
+            continue;
+          }
           long spanId = span.getMember(item).longValue();
           long rootSpanId = root.getMember(item).longValue();
-          String operation = op != null ? op.getMember(item) : null;
-          if (spanId == 0L) {
-            hasZeroSpanId = true;
-          } else {
-            // We only count events from the active-span runs; spanless sleeps don't emit a
-            // TaskBlock at all (TaskBlockHelper short-circuits).
-            activeSpanTaskBlockCount++;
-            if (rootSpanId == 0L) {
-              hasZeroLocalRootSpanId = true;
-            }
-            if ("threadsleep.active".equals(operation)) {
-              hasExpectedOperation = true;
-            }
-          }
+          spanlessTaskBlockCount++;
+          hasNonZeroSpanId |= spanId != 0L;
+          hasNonZeroLocalRootSpanId |= rootSpanId != 0L;
+          hasMissingEventThread |= threadName == null || threadName.isEmpty();
         }
       }
     }

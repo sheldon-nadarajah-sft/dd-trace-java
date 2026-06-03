@@ -6,7 +6,7 @@ import datadog.trace.api.Stateful;
 import datadog.trace.api.profiling.*;
 
 public interface ProfilingContextIntegration extends Profiling, EndpointCheckpointer, Timer {
-  /** Native {@code OSThreadState::SLEEPING}; used for span-scoped Thread.sleep precheck state. */
+  /** Native {@code OSThreadState::SLEEPING}; used for Thread.sleep precheck state. */
   int BLOCKING_STATE_SLEEPING = 7;
 
   int TASK_BLOCK_SUPPRESSION_SNAPSHOT_SIZE = 3;
@@ -87,8 +87,8 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
   }
 
   /**
-   * Marks the current platform thread as entering a span-scoped blocking interval that may be used
-   * by the native wall-clock timer to skip later signals after the first MethodSample in the run.
+   * Marks the current platform thread as entering an untraced blocking interval that may be used by
+   * the native wall-clock timer to skip later signals after the first MethodSample in the run.
    *
    * @return an opaque token to pass to {@link #blockExit(long)}, or {@code 0} when no native state
    *     was armed
@@ -122,12 +122,17 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
    * @param startTicks TSC tick captured at sleep entry
    * @param durationNanos wall-clock duration of the sleep in nanoseconds
    * @param blocker identity hash of the blocking object, or 0 for sleeps
-   * @param spanId span ID captured at sleep entry
-   * @param rootSpanId root span ID captured at sleep entry
+   * @param spanId span ID captured at sleep entry; native TaskBlock eligibility currently accepts
+   *     only zero
+   * @param rootSpanId root span ID captured at sleep entry; zero for accepted events
    */
   default void enqueueTaskBlock(
       long startTicks, long durationNanos, long blocker, long spanId, long rootSpanId) {}
 
+  /**
+   * Enqueues a TaskBlock with MethodSample reconstruction metadata captured from native suppression
+   * state.
+   */
   default void enqueueTaskBlock(
       long startTicks,
       long durationNanos,
@@ -142,10 +147,10 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
 
   /**
    * Called when the current thread is about to enter {@code LockSupport.park*}. The native profiler
-   * snapshots the OTEP TLS span context, records the start tick for {@code datadog.TaskBlock}
-   * emission on unpark, and arms native blocked-run state for wall-clock pre-send suppression after
-   * the first MethodSample in the park run. When {@code wallprecheck} is disabled (the default),
-   * wall-clock signals are still delivered to parked threads.
+   * snapshots the OTEP TLS context, records the start tick for {@code datadog.TaskBlock} emission
+   * on unpark when the context is zero, and arms native blocked-run state for wall-clock pre-send
+   * suppression after the first MethodSample in the park run. When {@code wallprecheck} is disabled
+   * (the default), wall-clock signals are still delivered to parked threads.
    */
   default void parkEnter() {}
 

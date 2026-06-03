@@ -22,6 +22,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Assumptions;
@@ -31,6 +32,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,6 +76,55 @@ class DatadogProfilerTest {
       }
     } else {
       log.warn("Datadog Profiler is not available. Skipping test.");
+    }
+  }
+
+  @Test
+  void testTaskBlockBridgeMethodsEmitTaskBlockEvents() throws Exception {
+    assertDoesNotThrow(
+        () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
+    DatadogProfiler profiler = DatadogProfiler.newInstance(ConfigProvider.getInstance());
+    Assumptions.assumeTrue(
+        profiler.hasTaskBlockEventSupport(),
+        "Loaded ddprof artifact does not expose TaskBlock bridge methods");
+    if (profiler.isActive()) {
+      log.warn("Datadog profiler is already running. Skipping task-block integration test.");
+      return;
+    }
+
+    OngoingRecording recording = profiler.start();
+    if (recording == null) {
+      log.warn("Datadog Profiler is not available. Skipping task-block integration test.");
+      return;
+    }
+
+    // The native TaskBlock gate filters events when span_id != 0 (reads from OTEP TLS).
+    // Clear span context so both the recordTaskBlock and park paths are eligible to emit.
+    profiler.clearSpanContext();
+    try {
+      // Direct bridge path (recordTaskBlock -> JavaProfiler.recordTaskBlock0). Span ids are no
+      // longer passed across JNI; the native side reads the zero context from OTEP TLS.
+      long startTicks = profiler.getCurrentTicks();
+      LockSupport.parkNanos(3_000_000L); // > 1ms native threshold
+      profiler.recordTaskBlockEvent(startTicks, 303L, 404L);
+
+      // Park path (parkEnter/parkExit -> JavaProfiler.parkEnter0/parkExit0)
+      profiler.parkEnter();
+      LockSupport.parkNanos(3_000_000L); // > 1ms native threshold
+      profiler.parkExit(707L, 808L);
+
+      RecordingData data = profiler.stop(recording);
+      assertNotNull(data);
+      IItemCollection events = JfrLoaderToolkit.loadEvents(data.getStream());
+      long taskBlockCount =
+          events.apply(ItemFilters.type("datadog.TaskBlock")).stream()
+              .mapToLong(IItemIterable::getItemCount)
+              .sum();
+
+      assertTrue(taskBlockCount > 0, "Expected datadog.TaskBlock events from bridge methods");
+    } finally {
+      profiler.clearSpanContext();
+      recording.stop();
     }
   }
 

@@ -34,7 +34,7 @@ final class ObjectWaitTaskBlockProfilingTest
       attr("numTaskBlockEmitted", "numTaskBlockEmitted", "numTaskBlockEmitted", NUMBER);
 
   @Test
-  @DisplayName("Object.wait emits span-attributed native TaskBlock events")
+  @DisplayName("Spanless Object.wait emits zero-context native TaskBlock events")
   void objectWaitsEmitTaskBlockEvents() throws Exception {
     Process targetProcess = createProcessBuilder().start();
 
@@ -50,13 +50,12 @@ final class ObjectWaitTaskBlockProfilingTest
         "WallClockSamplingEpoch events must include numTaskBlockEmitted");
     assertTrue(stats.taskBlockEmitted > 0, "Expected numTaskBlockEmitted counter");
     assertTrue(stats.taskBlocksWithNonZeroBlocker > 0, "Expected monitor identity to be recorded");
-    assertFalse(stats.hasZeroSpanId, "TaskBlock events must have non-zero spanId");
+    assertFalse(stats.hasActiveSpanTaskBlock, "Active-span waits must not emit TaskBlock events");
+    assertFalse(stats.hasNonZeroSpanId, "Spanless TaskBlock events must carry zero spanId");
     assertFalse(
-        stats.hasZeroLocalRootSpanId, "TaskBlock events must have non-zero localRootSpanId");
+        stats.hasNonZeroLocalRootSpanId,
+        "Spanless TaskBlock events must carry zero localRootSpanId");
     assertFalse(stats.hasMissingEventThread, "TaskBlock events must resolve Event Thread");
-    assertTrue(
-        stats.hasExpectedOperation,
-        "Expected TaskBlock events to include the objectwait.active span operation name");
     // notify/notifyAll are not instrumented, so the unblocking thread is not identified.
     assertFalse(
         stats.hasNonZeroUnblockingSpanId,
@@ -104,9 +103,12 @@ final class ObjectWaitTaskBlockProfilingTest
 
     public static void main(String[] args) throws Exception {
       ObjectWaitTaskBlockForkedApp app = new ObjectWaitTaskBlockForkedApp(GlobalTracer.get());
+      Thread.currentThread().setName("objectwait-active");
       app.runActiveSpanWaits();
-      app.runSpanlessWaits();
+      Thread.currentThread().setName("objectwait-short");
       app.runTooShortWaits();
+      Thread.currentThread().setName("objectwait-spanless");
+      app.runSpanlessWaits();
       Thread.sleep(1500);
     }
 
@@ -159,10 +161,10 @@ final class ObjectWaitTaskBlockProfilingTest
     private long taskBlockCount;
     private long taskBlockEmitted;
     private long taskBlocksWithNonZeroBlocker;
-    private boolean hasZeroSpanId;
-    private boolean hasZeroLocalRootSpanId;
+    private boolean hasActiveSpanTaskBlock;
+    private boolean hasNonZeroSpanId;
+    private boolean hasNonZeroLocalRootSpanId;
     private boolean hasMissingEventThread;
-    private boolean hasExpectedOperation;
     private boolean hasNonZeroUnblockingSpanId;
     private boolean hasMissingTaskBlockAttribute;
     private boolean hasMissingTaskBlockEmittedAttribute;
@@ -183,24 +185,26 @@ final class ObjectWaitTaskBlockProfilingTest
             UNBLOCKING_SPAN_ID.getAccessor(items.getType());
         IMemberAccessor<String, IItem> eventThreadAccessor =
             JdkAttributes.EVENT_THREAD_NAME.getAccessor(items.getType());
-        IMemberAccessor<String, IItem> operationAccessor = OPERATION.getAccessor(items.getType());
         for (IItem item : items) {
-          String operation = operationAccessor == null ? null : operationAccessor.getMember(item);
-          // Filter strictly to events emitted by our forked app; the JVM may emit other
-          // TaskBlock events (LockSupport from agent code, etc.) that we don't want to mix in.
-          if (!"objectwait.active".equals(operation) && !"objectwait.too-short".equals(operation)) {
+          String eventThread =
+              eventThreadAccessor == null ? null : eventThreadAccessor.getMember(item);
+          if ("objectwait-active".equals(eventThread)) {
+            hasActiveSpanTaskBlock = true;
+            continue;
+          }
+          if (!"objectwait-spanless".equals(eventThread)) {
             continue;
           }
           taskBlockCount++;
           if (spanIdAccessor != null) {
             long spanId = spanIdAccessor.getMember(item).longValue();
-            hasZeroSpanId |= spanId == 0;
+            hasNonZeroSpanId |= spanId != 0;
           } else {
             hasMissingTaskBlockAttribute = true;
           }
           if (localRootSpanIdAccessor != null) {
             long localRootSpanId = localRootSpanIdAccessor.getMember(item).longValue();
-            hasZeroLocalRootSpanId |= localRootSpanId == 0;
+            hasNonZeroLocalRootSpanId |= localRootSpanId != 0;
           } else {
             hasMissingTaskBlockAttribute = true;
           }
@@ -220,10 +224,7 @@ final class ObjectWaitTaskBlockProfilingTest
           } else {
             hasMissingTaskBlockAttribute = true;
           }
-          String eventThread =
-              eventThreadAccessor == null ? null : eventThreadAccessor.getMember(item);
           hasMissingEventThread |= eventThread == null || eventThread.isEmpty();
-          hasExpectedOperation |= "objectwait.active".equals(operation);
         }
       }
     }

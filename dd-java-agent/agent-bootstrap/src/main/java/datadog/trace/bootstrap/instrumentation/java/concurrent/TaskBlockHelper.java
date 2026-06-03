@@ -5,7 +5,10 @@ import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
 
-/** Helper for Java-level instrumentation that emits {@code datadog.TaskBlock} intervals. */
+/**
+ * Helper for Java-level instrumentation that emits {@code datadog.TaskBlock} intervals for untraced
+ * blocking runs.
+ */
 public final class TaskBlockHelper {
   static final long MIN_TASK_BLOCK_NANOS = 1_000_000L;
   private static final ThreadLocal<long[]> TASK_BLOCK_SUPPRESSION_SNAPSHOT =
@@ -130,26 +133,20 @@ public final class TaskBlockHelper {
       return null;
     }
     ProfilerContext context = ProfilerContexts.of(span);
-    if (context == null) {
+    if (span != null && context == null) {
+      return null;
+    }
+    if (context != null && context.getSpanId() != 0L) {
       return null;
     }
     long startTicks = profiling.getCurrentTicks();
     long startNanos = System.nanoTime();
     if (VirtualThreads.isCurrent()) {
-      return new State(
-          profiling, startTicks, startNanos, blocker, context.getSpanId(), context.getRootSpanId());
+      return new State(profiling, startTicks, startNanos, blocker, 0L, 0L);
     }
     if (deferred) {
       long blockToken = profiling.blockEnter(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING);
-      return new State(
-          profiling,
-          startTicks,
-          startNanos,
-          blocker,
-          true,
-          context.getSpanId(),
-          context.getRootSpanId(),
-          blockToken);
+      return new State(profiling, startTicks, startNanos, blocker, true, 0L, 0L, blockToken);
     }
     return new State(profiling, startTicks, startNanos, blocker);
   }
@@ -164,7 +161,7 @@ public final class TaskBlockHelper {
         return;
       }
       if (state.deferred) {
-        if (state.spanId == 0L) {
+        if (state.spanId != 0L) {
           return;
         }
         long durationNanos = System.nanoTime() - state.startNanos;
@@ -187,8 +184,10 @@ public final class TaskBlockHelper {
                 suppressionSnapshot[
                     ProfilingContextIntegration.TASK_BLOCK_SUPPRESSION_OBSERVED_STATE]);
       } else if (state.isVirtual) {
-        state.profiling.recordTaskBlockWithContext(
-            state.startTicks, state.blocker, 0L, state.spanId, state.rootSpanId);
+        if (state.spanId == 0L) {
+          state.profiling.recordTaskBlockWithContext(
+              state.startTicks, state.blocker, 0L, state.spanId, state.rootSpanId);
+        }
       } else {
         state.profiling.recordTaskBlock(state.startTicks, state.blocker, 0L);
       }
