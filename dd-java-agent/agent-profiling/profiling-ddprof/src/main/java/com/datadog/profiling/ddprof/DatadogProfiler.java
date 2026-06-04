@@ -132,6 +132,11 @@ public final class DatadogProfiler {
           "Unable to instantiate datadog profiler", reasonNotLoaded);
     }
     this.taskBlockBridge = new TaskBlockBridge(profiler);
+    if (getWallPrecheck(configProvider) && !taskBlockBridge.hasTaskBlockFromContextSupport()) {
+      log.debug(
+          "TaskBlock profiling bridge methods are unavailable in the loaded ddprof artifact; "
+              + "Java-level TaskBlock events will be skipped.");
+    }
 
     // TODO enable/disable events by name (e.g. datadog.ExecutionSample), not flag, so configuration
     //  can be consistent with JFR event control
@@ -481,6 +486,14 @@ public final class DatadogProfiler {
     return profiler != null ? taskBlockBridge.getTscFrequency() : 1_000_000_000L;
   }
 
+  boolean hasTaskBlockEventSupport() {
+    return profiler != null && taskBlockBridge.hasTaskBlockEventSupport();
+  }
+
+  boolean hasTaskBlockFromContextSupport() {
+    return profiler != null && taskBlockBridge.hasTaskBlockFromContextSupport();
+  }
+
   long blockEnter(int state) {
     if (profiler != null && recordingFlag.get()) {
       return taskBlockBridge.blockEnter(state);
@@ -589,6 +602,14 @@ public final class DatadogProfiler {
         return -1;
       }
       return ((Number) invoke(getCurrentThreadId)).intValue();
+    }
+
+    private boolean hasTaskBlockEventSupport() {
+      return recordTaskBlock != null && parkEnter != null && parkExit != null;
+    }
+
+    private boolean hasTaskBlockFromContextSupport() {
+      return getCurrentThreadId != null && recordTaskBlockFromContext != null;
     }
 
     private long getTscFrequency() {

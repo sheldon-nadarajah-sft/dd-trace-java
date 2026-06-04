@@ -82,6 +82,9 @@ class DatadogProfilerTest {
     assertDoesNotThrow(
         () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
     DatadogProfiler profiler = DatadogProfiler.newInstance(ConfigProvider.getInstance());
+    Assumptions.assumeTrue(
+        profiler.hasTaskBlockEventSupport(),
+        "Loaded ddprof artifact does not expose TaskBlock bridge methods");
     if (profiler.isActive()) {
       log.warn("Datadog profiler is already running. Skipping task-block integration test.");
       return;
