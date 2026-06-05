@@ -25,10 +25,10 @@ import net.bytebuddy.matcher.ElementMatcher;
  * Caller-site rewriting is the Java-level way to bracket direct {@code Thread.sleep} call sites
  * with a TaskBlock interval.
  *
- * <p>Coverage is purely opt-in by the user's bytecode: any supported direct {@code
- * Thread.sleep(...)} call site in a non-JDK class is wrapped. {@code TimeUnit.sleep(long)} is
- * instrumented separately at the bootstrap method boundary. Reflection-driven sleeps and JNI-driven
- * sleeps remain uncovered (intentional: out-of-band call paths).
+ * <p>Coverage is purely opt-in by the user's bytecode: supported direct {@code Thread.sleep(...)}
+ * call sites in non-excluded classes are wrapped. {@code TimeUnit.sleep(long)} is instrumented
+ * separately at the bootstrap method boundary. Reflection-driven sleeps and JNI-driven sleeps
+ * remain uncovered (intentional: out-of-band call paths).
  *
  * <p>Active on every JDK when enabled via {@code profiling.ddprof.wall.precheck=true} (opt-in;
  * default is off). The native JVMTI monitor callbacks cover {@code Object.wait()} and synchronized

@@ -34,8 +34,9 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
 
   // --- Async TaskBlock recording infrastructure (Thread.sleep deferred path) ---
 
-  // Pre-cached native tid per traced thread; populated in onAttach() to avoid repeated JNI on
-  // the hot path. Reading a ThreadLocal is pure Java once the value is set.
+  // Pre-cached native tid per thread. Traced threads populate this in onAttach(); spanless
+  // Thread.sleep instrumentation lazily resolves it without calling onAttach(), because onAttach()
+  // also changes wall-clock thread filtering state.
   private static final ThreadLocal<Integer> NATIVE_TID = new ThreadLocal<>();
 
   private static final BigInteger NANOS_PER_SECOND = BigInteger.valueOf(1_000_000_000L);
@@ -111,6 +112,18 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
     return tid != null ? tid : -1;
   }
 
+  private static int getOrResolveCurrentThreadId() {
+    Integer tid = NATIVE_TID.get();
+    if (tid != null) {
+      return tid;
+    }
+    int resolvedTid = DDPROF.getCurrentThreadId();
+    if (resolvedTid >= 0) {
+      NATIVE_TID.set(resolvedTid);
+    }
+    return resolvedTid;
+  }
+
   @Override
   public long blockEnter(int state) {
     return DDPROF.blockEnter(state);
@@ -145,7 +158,7 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
     if (spanId != 0L) {
       return;
     }
-    int tid = getCurrentThreadId();
+    int tid = getOrResolveCurrentThreadId();
     if (tid < 0) {
       return;
     }

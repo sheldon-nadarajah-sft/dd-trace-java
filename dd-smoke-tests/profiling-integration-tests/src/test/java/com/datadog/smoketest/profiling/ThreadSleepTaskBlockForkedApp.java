@@ -18,6 +18,7 @@ public final class ThreadSleepTaskBlockForkedApp {
     app.runSubThresholdSleeps();
     Thread.currentThread().setName("threadsleep-spanless");
     app.runSpanlessSleeps();
+    app.runNeverAttachedSpanlessSleeps();
     Thread.sleep(1500);
   }
 
@@ -42,6 +43,23 @@ public final class ThreadSleepTaskBlockForkedApp {
     for (int i = 0; i < SLEEP_ITERATIONS; i++) {
       Thread.sleep(LONG_SLEEP_MILLIS);
     }
+  }
+
+  private void runNeverAttachedSpanlessSleeps() throws InterruptedException {
+    Thread thread =
+        new Thread(
+            () -> {
+              try {
+                for (int i = 0; i < SLEEP_ITERATIONS; i++) {
+                  Thread.sleep(LONG_SLEEP_MILLIS);
+                }
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+            },
+            "threadsleep-never-attached");
+    thread.start();
+    thread.join();
   }
 
   private void runSubThresholdSleeps() throws InterruptedException {

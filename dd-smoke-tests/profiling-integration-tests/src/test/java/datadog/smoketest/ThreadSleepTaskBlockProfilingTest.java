@@ -91,6 +91,9 @@ final class ThreadSleepTaskBlockProfilingTest {
     assertTrue(
         stats.spanlessTaskBlockCount > 0,
         "Expected datadog.TaskBlock events from spanless Thread.sleep call sites");
+    assertTrue(
+        stats.neverAttachedTaskBlockCount > 0,
+        "Expected datadog.TaskBlock events from never-attached spanless Thread.sleep call sites");
     assertFalse(stats.hasActiveSpanTaskBlock, "Active-span sleeps must not emit TaskBlock events");
     assertFalse(stats.hasNonZeroSpanId, "Spanless TaskBlock events must carry zero spanId");
     assertFalse(
@@ -243,6 +246,7 @@ final class ThreadSleepTaskBlockProfilingTest {
   /** Aggregate counts/flags collected across all JFR streams produced by the forked process. */
   private static final class JfrStats {
     long spanlessTaskBlockCount;
+    long neverAttachedTaskBlockCount;
     boolean hasActiveSpanTaskBlock;
     boolean hasNonZeroSpanId;
     boolean hasNonZeroLocalRootSpanId;
@@ -264,12 +268,18 @@ final class ThreadSleepTaskBlockProfilingTest {
             hasActiveSpanTaskBlock = true;
             continue;
           }
-          if (!"threadsleep-spanless".equals(threadName)) {
+          boolean spanlessThread = "threadsleep-spanless".equals(threadName);
+          boolean neverAttachedThread = "threadsleep-never-attached".equals(threadName);
+          if (!spanlessThread && !neverAttachedThread) {
             continue;
           }
           long spanId = span.getMember(item).longValue();
           long rootSpanId = root.getMember(item).longValue();
-          spanlessTaskBlockCount++;
+          if (spanlessThread) {
+            spanlessTaskBlockCount++;
+          } else {
+            neverAttachedTaskBlockCount++;
+          }
           hasNonZeroSpanId |= spanId != 0L;
           hasNonZeroLocalRootSpanId |= rootSpanId != 0L;
           hasMissingEventThread |= threadName == null || threadName.isEmpty();
