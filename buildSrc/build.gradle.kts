@@ -77,7 +77,7 @@ repositories {
 dependencies {
   implementation(gradleApi())
 
-  implementation("net.bytebuddy", "byte-buddy-gradle-plugin", "1.18.8")
+  implementation("net.bytebuddy", "byte-buddy-gradle-plugin", "1.18.10")
 
   implementation("org.eclipse.aether", "aether-connector-basic", "1.1.0")
   implementation("org.eclipse.aether", "aether-transport-http", "1.1.0")
@@ -101,6 +101,7 @@ dependencies {
 
 tasks.compileKotlin {
   dependsOn(":call-site-instrumentation-plugin:build")
+  dependsOn(":modifiable-config-agent:build")
 }
 
 testing {
