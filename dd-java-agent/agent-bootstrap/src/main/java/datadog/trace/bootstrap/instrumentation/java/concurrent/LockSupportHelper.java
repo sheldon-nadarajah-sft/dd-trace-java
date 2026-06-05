@@ -22,9 +22,9 @@ import java.util.WeakHashMap;
  * overwritten by a later non-causal one.
  *
  * <p>We accept this residual race because the correct fix (per-park sequence numbers carried
- * through {@code ProfilerContext} and matched on entry) is disproportionate to the rarity of these
- * edge cases on the JDKs we target, and because the worst-case impact is a single mis-attributed
- * {@code TaskBlock} event per occurrence.
+ * through {@code ProfilerContext} and matched on entry) would add state to every park/unpark path,
+ * while the worst-case impact here is a single mis-attributed {@code TaskBlock} event per
+ * occurrence.
  *
  * <h3>Virtual thread handling</h3>
  *
