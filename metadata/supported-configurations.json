@@ -2753,14 +2753,6 @@
         "aliases": []
       }
     ],
-    "DD_PROFILING_ASYNC_WALL_PRECHECK": [
-      {
-        "version": "A",
-        "type": "boolean",
-        "default": "false",
-        "aliases": []
-      }
-    ],
     "DD_PROFILING_ASYNC_WALL_INTERVAL_MS": [
       {
         "version": "A",
