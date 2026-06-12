@@ -45,8 +45,6 @@ import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.bootstrap.instrumentation.api.TaskWrapper;
 import datadog.trace.util.TempLocationManager;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -105,7 +103,6 @@ public final class DatadogProfiler {
   private final AtomicBoolean recordingFlag = new AtomicBoolean(false);
   private final ConfigProvider configProvider;
   private final JavaProfiler profiler;
-  private final TaskBlockBridge taskBlockBridge;
   private final Set<ProfilingMode> profilingModes = EnumSet.noneOf(ProfilingMode.class);
 
   private final ContextSetter contextSetter;
@@ -131,12 +128,6 @@ public final class DatadogProfiler {
     if (reasonNotLoaded != null) {
       throw new UnsupportedOperationException(
           "Unable to instantiate datadog profiler", reasonNotLoaded);
-    }
-    this.taskBlockBridge = new TaskBlockBridge(profiler);
-    if (getWallPrecheck(configProvider) && !taskBlockBridge.hasTaskBlockFromContextSupport()) {
-      log.debug(
-          "TaskBlock profiling bridge methods are unavailable in the loaded ddprof artifact; "
-              + "Java-level TaskBlock events will be skipped.");
     }
 
     // TODO enable/disable events by name (e.g. datadog.ExecutionSample), not flag, so configuration
@@ -354,17 +345,6 @@ public final class DatadogProfiler {
     }
   }
 
-  /** Monotonic tick count for TaskBlock and wall-clock off-CPU interval timing. */
-  public long getCurrentTicks() {
-    return profiler.getCurrentTicks();
-  }
-
-  int encode(CharSequence constant) {
-    // java-profiler ContextSetter no longer exposes value encoding.
-    // Keep API contract by returning "not encoded" (0), which callers already handle.
-    return 0;
-  }
-
   public int operationNameOffset() {
     return offsetOf(OPERATION);
   }
@@ -475,239 +455,6 @@ public final class DatadogProfiler {
         long endTicks = profiler.getCurrentTicks();
         profiler.recordQueueTime(
             startTicks, endTicks, taskType, scheduler, queueType, queueLength, origin);
-      }
-    }
-  }
-
-  public int getCurrentThreadId() {
-    return profiler != null ? taskBlockBridge.getCurrentThreadId() : -1;
-  }
-
-  public long getTscFrequency() {
-    return profiler != null ? taskBlockBridge.getTscFrequency() : 1_000_000_000L;
-  }
-
-  boolean hasTaskBlockEventSupport() {
-    return profiler != null && taskBlockBridge.hasTaskBlockEventSupport();
-  }
-
-  boolean hasTaskBlockFromContextSupport() {
-    return profiler != null && taskBlockBridge.hasTaskBlockFromContextSupport();
-  }
-
-  long blockEnter(int state) {
-    if (profiler != null && recordingFlag.get()) {
-      return taskBlockBridge.blockEnter(state);
-    }
-    return 0L;
-  }
-
-  void blockExit(long token) {
-    if (token != 0L && profiler != null) {
-      taskBlockBridge.blockExit(token);
-    }
-  }
-
-  void recordTaskBlockEvent(long startTicks, long blocker, long unblockingSpanId) {
-    if (profiler != null && recordingFlag.get()) {
-      long endTicks = profiler.getCurrentTicks();
-      taskBlockBridge.recordTaskBlock(startTicks, endTicks, blocker, unblockingSpanId);
-    }
-  }
-
-  void recordTaskBlockWithContextEvent(
-      long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
-    if (profiler != null && recordingFlag.get()) {
-      long endTicks = profiler.getCurrentTicks();
-      taskBlockBridge.recordTaskBlockWithContext(
-          startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
-    }
-  }
-
-  void recordTaskBlockFromContextEvent(
-      int tid,
-      long startTicks,
-      long endTicks,
-      long blocker,
-      long unblockingSpanId,
-      long spanId,
-      long rootSpanId) {
-    if (profiler != null && recordingFlag.get()) {
-      taskBlockBridge.recordTaskBlockFromContext(
-          tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
-    }
-  }
-
-  void parkEnter() {
-    // Guard with recordingFlag: stopProfiler() calls LockSupport.parkNanos while waiting for
-    // the profiler to stop. Without this guard an instrumented park on a tracing thread could call
-    // native parkEnter0 on a stopping/stopped profiler.
-    if (profiler != null && recordingFlag.get()) {
-      taskBlockBridge.parkEnter();
-    }
-  }
-
-  void parkExit(long blocker, long unblockingSpanId) {
-    if (profiler != null && recordingFlag.get()) {
-      taskBlockBridge.parkExit(blocker, unblockingSpanId);
-    }
-  }
-
-  private static final class TaskBlockBridge {
-    private static final long DEFAULT_TSC_FREQUENCY = 1_000_000_000L;
-
-    private final JavaProfiler profiler;
-    private final Method getCurrentThreadId;
-    private final Method getTscFrequency;
-    private final Method recordTaskBlock;
-    private final Method recordTaskBlockWithContext;
-    private final Method recordTaskBlockFromContext;
-    private final Method blockEnter;
-    private final Method blockExit;
-    private final Method parkEnter;
-    private final Method parkExit;
-
-    private TaskBlockBridge(JavaProfiler profiler) {
-      this.profiler = profiler;
-      this.getCurrentThreadId = method("getCurrentThreadId");
-      this.getTscFrequency = method("getTscFrequency");
-      this.recordTaskBlock =
-          method("recordTaskBlock", long.class, long.class, long.class, long.class);
-      this.recordTaskBlockWithContext =
-          method(
-              "recordTaskBlockWithContext",
-              long.class,
-              long.class,
-              long.class,
-              long.class,
-              long.class,
-              long.class);
-      this.recordTaskBlockFromContext =
-          method(
-              "recordTaskBlockFromContext",
-              int.class,
-              long.class,
-              long.class,
-              long.class,
-              long.class,
-              long.class,
-              long.class);
-      this.blockEnter = method("blockEnter", int.class);
-      this.blockExit = method("blockExit", long.class);
-      this.parkEnter = method("parkEnter");
-      this.parkExit = method("parkExit", long.class, long.class);
-    }
-
-    private int getCurrentThreadId() {
-      if (getCurrentThreadId == null) {
-        return -1;
-      }
-      return ((Number) invoke(getCurrentThreadId)).intValue();
-    }
-
-    private boolean hasTaskBlockEventSupport() {
-      return recordTaskBlock != null && parkEnter != null && parkExit != null;
-    }
-
-    private boolean hasTaskBlockFromContextSupport() {
-      return getCurrentThreadId != null && recordTaskBlockFromContext != null;
-    }
-
-    private long getTscFrequency() {
-      if (getTscFrequency == null) {
-        return DEFAULT_TSC_FREQUENCY;
-      }
-      return ((Number) invoke(getTscFrequency)).longValue();
-    }
-
-    private void recordTaskBlock(
-        long startTicks, long endTicks, long blocker, long unblockingSpanId) {
-      invokeIfPresent(recordTaskBlock, startTicks, endTicks, blocker, unblockingSpanId);
-    }
-
-    private void recordTaskBlockWithContext(
-        long startTicks,
-        long endTicks,
-        long blocker,
-        long unblockingSpanId,
-        long spanId,
-        long rootSpanId) {
-      invokeIfPresent(
-          recordTaskBlockWithContext,
-          startTicks,
-          endTicks,
-          blocker,
-          unblockingSpanId,
-          spanId,
-          rootSpanId);
-    }
-
-    private void recordTaskBlockFromContext(
-        int tid,
-        long startTicks,
-        long endTicks,
-        long blocker,
-        long unblockingSpanId,
-        long spanId,
-        long rootSpanId) {
-      invokeIfPresent(
-          recordTaskBlockFromContext,
-          tid,
-          startTicks,
-          endTicks,
-          blocker,
-          unblockingSpanId,
-          spanId,
-          rootSpanId);
-    }
-
-    private long blockEnter(int state) {
-      if (blockEnter == null) {
-        return 0L;
-      }
-      return ((Number) invoke(blockEnter, state)).longValue();
-    }
-
-    private void blockExit(long token) {
-      invokeIfPresent(blockExit, token);
-    }
-
-    private void parkEnter() {
-      invokeIfPresent(parkEnter);
-    }
-
-    private void parkExit(long blocker, long unblockingSpanId) {
-      invokeIfPresent(parkExit, blocker, unblockingSpanId);
-    }
-
-    private static Method method(String name, Class<?>... parameterTypes) {
-      try {
-        return JavaProfiler.class.getMethod(name, parameterTypes);
-      } catch (NoSuchMethodException ignored) {
-        return null;
-      }
-    }
-
-    private void invokeIfPresent(Method method, Object... args) {
-      if (method != null) {
-        invoke(method, args);
-      }
-    }
-
-    private Object invoke(Method method, Object... args) {
-      try {
-        return method.invoke(profiler, args);
-      } catch (IllegalAccessException e) {
-        throw new IllegalStateException(e);
-      } catch (InvocationTargetException e) {
-        Throwable cause = e.getCause();
-        if (cause instanceof RuntimeException) {
-          throw (RuntimeException) cause;
-        }
-        if (cause instanceof Error) {
-          throw (Error) cause;
-        }
-        throw new IllegalStateException(cause);
       }
     }
   }

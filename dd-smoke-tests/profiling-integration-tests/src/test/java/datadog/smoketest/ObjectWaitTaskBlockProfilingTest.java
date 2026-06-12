@@ -93,6 +93,12 @@ final class ObjectWaitTaskBlockProfilingTest {
 
     JfrStats stats = loadStats();
     assertTrue(stats.taskBlockCount > 0, "Expected datadog.TaskBlock events");
+    assertFalse(
+        stats.hasMissingTaskBlockAttribute,
+        "TaskBlock events must include spanId, localRootSpanId, blocker, and unblockingSpanId");
+    assertFalse(
+        stats.hasMissingTaskBlockEmittedAttribute,
+        "WallClockSamplingEpoch events must include numTaskBlockEmitted");
     assertTrue(stats.taskBlockEmitted > 0, "Expected numTaskBlockEmitted counter");
     assertTrue(stats.taskBlocksWithNonZeroBlocker > 0, "Expected monitor identity to be recorded");
     assertFalse(stats.hasZeroSpanId, "TaskBlock events must have non-zero spanId");
@@ -290,6 +296,8 @@ final class ObjectWaitTaskBlockProfilingTest {
     private boolean hasMissingEventThread;
     private boolean hasExpectedOperation;
     private boolean hasNonZeroUnblockingSpanId;
+    private boolean hasMissingTaskBlockAttribute;
+    private boolean hasMissingTaskBlockEmittedAttribute;
 
     private void add(IItemCollection events) {
       addTaskBlocks(events);
@@ -316,22 +324,38 @@ final class ObjectWaitTaskBlockProfilingTest {
             continue;
           }
           taskBlockCount++;
-          long spanId = spanIdAccessor.getMember(item).longValue();
-          long localRootSpanId = localRootSpanIdAccessor.getMember(item).longValue();
-          long blocker = blockerAccessor.getMember(item).longValue();
-          long unblockingSpanId = unblockingSpanIdAccessor.getMember(item).longValue();
+          if (spanIdAccessor != null) {
+            long spanId = spanIdAccessor.getMember(item).longValue();
+            hasZeroSpanId |= spanId == 0;
+          } else {
+            hasMissingTaskBlockAttribute = true;
+          }
+          if (localRootSpanIdAccessor != null) {
+            long localRootSpanId = localRootSpanIdAccessor.getMember(item).longValue();
+            hasZeroLocalRootSpanId |= localRootSpanId == 0;
+          } else {
+            hasMissingTaskBlockAttribute = true;
+          }
+          if (blockerAccessor != null) {
+            long blocker = blockerAccessor.getMember(item).longValue();
+            if (blocker != 0) {
+              taskBlocksWithNonZeroBlocker++;
+            }
+          } else {
+            hasMissingTaskBlockAttribute = true;
+          }
+          if (unblockingSpanIdAccessor != null) {
+            long unblockingSpanId = unblockingSpanIdAccessor.getMember(item).longValue();
+            if (unblockingSpanId != 0) {
+              hasNonZeroUnblockingSpanId = true;
+            }
+          } else {
+            hasMissingTaskBlockAttribute = true;
+          }
           String eventThread =
               eventThreadAccessor == null ? null : eventThreadAccessor.getMember(item);
-          hasZeroSpanId |= spanId == 0;
-          hasZeroLocalRootSpanId |= localRootSpanId == 0;
           hasMissingEventThread |= eventThread == null || eventThread.isEmpty();
           hasExpectedOperation |= "objectwait.active".equals(operation);
-          if (blocker != 0) {
-            taskBlocksWithNonZeroBlocker++;
-          }
-          if (unblockingSpanId != 0) {
-            hasNonZeroUnblockingSpanId = true;
-          }
         }
       }
     }
@@ -341,6 +365,10 @@ final class ObjectWaitTaskBlockProfilingTest {
       for (IItemIterable items : epochs) {
         IMemberAccessor<IQuantity, IItem> emittedAccessor =
             TASK_BLOCK_EMITTED.getAccessor(items.getType());
+        if (emittedAccessor == null) {
+          hasMissingTaskBlockEmittedAttribute = true;
+          continue;
+        }
         for (IItem item : items) {
           taskBlockEmitted += emittedAccessor.getMember(item).longValue();
         }
