@@ -111,15 +111,17 @@ public final class LockSupportHelper {
       return null;
     }
     long blockerHash = blocker != null ? System.identityHashCode(blocker) : 0L;
+    // Skip native parkEnter0/parkExit0 JNI when no span is active — native would discard the
+    // interval at parkExit() anyway (zero-span eligibility check). Shared by both branches below.
+    ProfilerContext ctx = ProfilerContexts.of(AgentTracer.activeSpan());
+    if (ctx == null) {
+      // No active span - nothing to record.
+      UNPARKING_SPAN.remove(Thread.currentThread());
+      return null;
+    }
     if (VirtualThreads.isCurrent()) {
       // Virtual thread: skip native parkEnter0 (carrier-scoped TLS is unsafe).
       // Capture span/root ids now so we can pass them explicitly on unpark.
-      ProfilerContext ctx = ProfilerContexts.of(AgentTracer.activeSpan());
-      if (ctx == null) {
-        // No active span - nothing to record.
-        UNPARKING_SPAN.remove(Thread.currentThread());
-        return null;
-      }
       long startTicks;
       try {
         startTicks = profiling.getCurrentTicks();
@@ -131,14 +133,6 @@ public final class LockSupportHelper {
           profiling, blockerHash, startTicks, ctx.getSpanId(), ctx.getRootSpanId());
     }
 
-    // Platform thread: skip parkEnter() JNI when no span is active — native would discard
-    // the interval at parkExit() anyway (zero-span eligibility check). Mirrors the guard
-    // already present on the virtual thread path above.
-    ProfilerContext ctx = ProfilerContexts.of(AgentTracer.activeSpan());
-    if (ctx == null) {
-      UNPARKING_SPAN.remove(Thread.currentThread());
-      return null;
-    }
     try {
       profiling.parkEnter();
     } catch (Throwable ignored) {
