@@ -16,10 +16,12 @@ import java.util.WeakHashMap;
  * park*} return on thread {@code t}. {@code LockSupport.park*} is documented to be allowed to
  * return spuriously, in which case the parked thread re-parks without ever consuming the map entry.
  * A subsequent, unrelated {@code park*} call on the same thread will then drain the stale entry and
- * incorrectly attribute the unblocking span to a {@code TaskBlock} it did not cause. Repeated
- * {@code unpark(t)} calls before one {@code park*} return are also lossy: LockSupport's permit is
- * one-bit and this map stores only the latest caller span, so an earlier causal unpark can be
- * overwritten by a later non-causal one.
+ * incorrectly attribute the unblocking span to a {@code TaskBlock} it did not cause. Similarly,
+ * {@code unpark(t)} can be called while {@code t} is not actually blocked in {@code park*}; that
+ * stored span may then be consumed by a later unrelated park. Repeated {@code unpark(t)} calls
+ * before one {@code park*} return are also lossy: LockSupport's permit is one-bit and this map
+ * stores only the latest caller span, so an earlier causal unpark can be overwritten by a later
+ * non-causal one.
  *
  * <p>We accept this residual race because the correct fix (per-park sequence numbers carried
  * through {@code ProfilerContext} and matched on entry) would add state to every park/unpark path,
@@ -148,6 +150,7 @@ public final class LockSupportHelper {
     return new ParkState(profiling, blockerHash);
   }
 
+  /** Production advice exit point: drains the per-thread unblocking span before finishing. */
   public static void finish(ParkState state) {
     // Always drain the map entry before any early return. If we returned first, a stale
     // unblocking-span ID placed by a prior unpark() would persist and be incorrectly
@@ -156,6 +159,10 @@ public final class LockSupportHelper {
     finish(state, unblockingSpanId != null ? unblockingSpanId : 0L);
   }
 
+  /**
+   * Low-level finish helper for callers that already resolved the unblocking span id. This overload
+   * intentionally does not read or drain {@link #UNPARKING_SPAN}.
+   */
   public static void finish(ParkState state, long unblockingSpanId) {
     if (state == null) {
       return;
@@ -176,7 +183,10 @@ public final class LockSupportHelper {
     } else {
       // Platform thread: parkExit() clears native parked state and records an eligible TaskBlock
       // using the entry tick saved by parkEnter().
-      state.profiling.parkExit(state.blockerHash, unblockingSpanId);
+      try {
+        state.profiling.parkExit(state.blockerHash, unblockingSpanId);
+      } catch (Throwable ignored) {
+      }
     }
   }
 

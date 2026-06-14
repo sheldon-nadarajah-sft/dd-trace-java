@@ -45,6 +45,8 @@ import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.bootstrap.instrumentation.api.TaskWrapper;
 import datadog.trace.util.TempLocationManager;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,6 +107,7 @@ public final class DatadogProfiler {
   private final AtomicBoolean recordingFlag = new AtomicBoolean(false);
   private final ConfigProvider configProvider;
   private final JavaProfiler profiler;
+  private final TaskBlockBridge taskBlockBridge;
   private final Set<ProfilingMode> profilingModes = EnumSet.noneOf(ProfilingMode.class);
 
   private final ContextSetter contextSetter;
@@ -257,6 +260,12 @@ public final class DatadogProfiler {
     if (reasonNotLoaded != null) {
       throw new UnsupportedOperationException(
           "Unable to instantiate datadog profiler", reasonNotLoaded);
+    }
+    this.taskBlockBridge = new TaskBlockBridge(profiler);
+    if (getWallPrecheck(configProvider) && !taskBlockBridge.hasTaskBlockEventSupport()) {
+      log.debug(
+          "TaskBlock profiling bridge methods are unavailable in the loaded ddprof artifact; "
+              + "Java-level TaskBlock events will be skipped.");
     }
 
     // TODO enable/disable events by name (e.g. datadog.ExecutionSample), not flag, so configuration
@@ -485,6 +494,11 @@ public final class DatadogProfiler {
               + " This avoids excessive memory overhead.",
           MAX_NUM_ENDPOINTS);
     }
+  }
+
+  /** Monotonic tick count for TaskBlock and wall-clock off-CPU interval timing. */
+  public long getCurrentTicks() {
+    return profiler.getCurrentTicks();
   }
 
   public int operationNameOffset() {
@@ -758,6 +772,112 @@ public final class DatadogProfiler {
         long endTicks = profiler.getCurrentTicks();
         profiler.recordQueueTime(
             startTicks, endTicks, taskType, scheduler, queueType, queueLength, origin);
+      }
+    }
+  }
+
+  void recordTaskBlockWithContextEvent(
+      long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+    if (profiler != null && recordingFlag.get()) {
+      long endTicks = profiler.getCurrentTicks();
+      taskBlockBridge.recordTaskBlockWithContext(
+          startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+  }
+
+  void parkEnter() {
+    // Guard with recordingFlag: stopProfiler() calls LockSupport.parkNanos while waiting for
+    // the profiler to stop. Without this guard an instrumented park on a tracing thread could call
+    // native parkEnter0 on a stopping/stopped profiler.
+    if (profiler != null && recordingFlag.get()) {
+      taskBlockBridge.parkEnter();
+    }
+  }
+
+  void parkExit(long blocker, long unblockingSpanId) {
+    if (profiler != null && recordingFlag.get()) {
+      taskBlockBridge.parkExit(blocker, unblockingSpanId);
+    }
+  }
+
+  private static final class TaskBlockBridge {
+    private final JavaProfiler profiler;
+    private final Method recordTaskBlockWithContext;
+    private final Method parkEnter;
+    private final Method parkExit;
+
+    private TaskBlockBridge(JavaProfiler profiler) {
+      this.profiler = profiler;
+      this.recordTaskBlockWithContext =
+          method(
+              "recordTaskBlockWithContext",
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class,
+              long.class);
+      this.parkEnter = method("parkEnter");
+      this.parkExit = method("parkExit", long.class, long.class);
+    }
+
+    private boolean hasTaskBlockEventSupport() {
+      return recordTaskBlockWithContext != null && parkEnter != null && parkExit != null;
+    }
+
+    private void recordTaskBlockWithContext(
+        long startTicks,
+        long endTicks,
+        long blocker,
+        long unblockingSpanId,
+        long spanId,
+        long rootSpanId) {
+      invokeIfPresent(
+          recordTaskBlockWithContext,
+          startTicks,
+          endTicks,
+          blocker,
+          unblockingSpanId,
+          spanId,
+          rootSpanId);
+    }
+
+    private void parkEnter() {
+      invokeIfPresent(parkEnter);
+    }
+
+    private void parkExit(long blocker, long unblockingSpanId) {
+      invokeIfPresent(parkExit, blocker, unblockingSpanId);
+    }
+
+    private static Method method(String name, Class<?>... parameterTypes) {
+      try {
+        return JavaProfiler.class.getMethod(name, parameterTypes);
+      } catch (NoSuchMethodException ignored) {
+        return null;
+      }
+    }
+
+    private void invokeIfPresent(Method method, Object... args) {
+      if (method != null) {
+        invoke(method, args);
+      }
+    }
+
+    private Object invoke(Method method, Object... args) {
+      try {
+        return method.invoke(profiler, args);
+      } catch (IllegalAccessException e) {
+        throw new IllegalStateException(e);
+      } catch (InvocationTargetException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException) {
+          throw (RuntimeException) cause;
+        }
+        if (cause instanceof Error) {
+          throw (Error) cause;
+        }
+        throw new IllegalStateException(cause);
       }
     }
   }

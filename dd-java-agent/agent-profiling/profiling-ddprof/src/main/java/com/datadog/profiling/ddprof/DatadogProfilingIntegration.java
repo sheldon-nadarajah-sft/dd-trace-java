@@ -78,6 +78,28 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
     return "ddprof";
   }
 
+  @Override
+  public long getCurrentTicks() {
+    return DDPROF.getCurrentTicks();
+  }
+
+  @Override
+  public void recordTaskBlockWithContext(
+      long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+    DDPROF.recordTaskBlockWithContextEvent(
+        startTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+  }
+
+  @Override
+  public void parkEnter() {
+    DDPROF.parkEnter();
+  }
+
+  @Override
+  public void parkExit(long blocker, long unblockingSpanId) {
+    DDPROF.parkExit(blocker, unblockingSpanId);
+  }
+
   public void clearContext() {
     DDPROF.clearSpanContext();
     DDPROF.clearContextValue(SPAN_NAME_INDEX);

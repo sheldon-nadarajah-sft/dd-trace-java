@@ -34,6 +34,24 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
     return 0;
   }
 
+  /** Returns the current TSC tick count for the calling thread. */
+  default long getCurrentTicks() {
+    return 0L;
+  }
+
+  /**
+   * Variant of TaskBlock recording for virtual threads, where carrier-thread TLS cannot be trusted
+   * between park entry and park exit.
+   */
+  default void recordTaskBlockWithContext(
+      long startTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId) {}
+
+  /** Called when the current thread is about to enter {@code LockSupport.park*}. */
+  default void parkEnter() {}
+
+  /** Called when the current thread has returned from {@code LockSupport.park*}. */
+  default void parkExit(long blocker, long unblockingSpanId) {}
+
   String name();
 
   final class NoOp implements ProfilingContextIntegration {

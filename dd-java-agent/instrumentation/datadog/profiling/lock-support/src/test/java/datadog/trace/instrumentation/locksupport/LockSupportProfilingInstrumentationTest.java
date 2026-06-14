@@ -1,10 +1,12 @@
 package datadog.trace.instrumentation.locksupport;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -222,12 +224,70 @@ class LockSupportProfilingInstrumentationTest {
   }
 
   @Test
+  void parkAdvice_finish_suppressesPlatformParkExitException() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    LockSupportHelper.ParkState state = new LockSupportHelper.ParkState(profiling, 42L);
+    doThrow(new RuntimeException("boom")).when(profiling).parkExit(42L, 99L);
+
+    assertDoesNotThrow(() -> LockSupportHelper.finish(state, 99L));
+
+    verify(profiling).parkExit(42L, 99L);
+  }
+
+  @Test
+  void parkAdvice_finish_virtualState_recordsTaskBlockWithContext() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    LockSupportHelper.ParkState state =
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 33L, 44L);
+
+    LockSupportHelper.finish(state, 55L);
+
+    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+    verify(profiling, never()).parkExit(22L, 55L);
+  }
+
+  @Test
+  void parkAdvice_finish_virtualStateWithZeroSpan_doesNotRecordTaskBlock() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    LockSupportHelper.ParkState state =
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 0L, 44L);
+
+    LockSupportHelper.finish(state, 55L);
+
+    verifyNoInteractions(profiling);
+  }
+
+  @Test
+  void parkAdvice_finish_suppressesVirtualTaskBlockException() {
+    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
+    LockSupportHelper.ParkState state =
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 33L, 44L);
+    doThrow(new RuntimeException("boom"))
+        .when(profiling)
+        .recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+
+    assertDoesNotThrow(() -> LockSupportHelper.finish(state, 55L));
+
+    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+  }
+
+  @Test
   void parkAdvice_finish_nullState_doesNotTouchProfiling() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
 
     LockSupportHelper.finish(null, 99L);
 
     verifyNoInteractions(profiling);
+  }
+
+  @Test
+  void parkAdvice_finishWithExplicitUnblockingSpan_doesNotDrainMapWhenStateIsNull() {
+    Thread current = Thread.currentThread();
+    LockSupportHelper.UNPARKING_SPAN.put(current, 123L);
+
+    LockSupportHelper.finish(null, 99L);
+
+    assertEquals(123L, LockSupportHelper.UNPARKING_SPAN.remove(current));
   }
 
   /**
@@ -241,7 +301,14 @@ class LockSupportProfilingInstrumentationTest {
   @Test
   void stale_entry_is_drained_when_park_fires_without_active_span() {
     Thread current = Thread.currentThread();
-    LockSupportHelper.UNPARKING_SPAN.put(current, 99L);
+    AgentSpan span = mock(AgentSpan.class);
+    ProfilerSpanContext context = mock(ProfilerSpanContext.class);
+    when(span.context()).thenReturn(context);
+    when(context.getSpanId()).thenReturn(99L);
+    AgentTracer.forceRegister(mockTracerWithActiveSpan(span));
+
+    LockSupportHelper.recordUnpark(current);
+    assertEquals(99L, LockSupportHelper.UNPARKING_SPAN.get(current));
 
     // Simulate park() returning with no active span (state == null)
     LockSupportHelper.finish(null);
