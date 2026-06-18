@@ -8,7 +8,6 @@ import static datadog.trace.core.otlp.common.OtlpCommonProto.LEN_WIRE_TYPE;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeAttribute;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeI64;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeTag;
-import static datadog.trace.core.otlp.common.OtlpResourceProto.RESOURCE_MESSAGE;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordDataPointMessage;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordMetricMessage;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordScopedMetricsMessage;
@@ -23,6 +22,7 @@ import datadog.trace.bootstrap.otlp.metrics.OtlpHistogramPoint;
 import datadog.trace.core.otlp.common.OtlpGrpcSender;
 import datadog.trace.core.otlp.common.OtlpHttpSender;
 import datadog.trace.core.otlp.common.OtlpProtoBuffer;
+import datadog.trace.core.otlp.common.OtlpResourceProto;
 import datadog.trace.core.otlp.common.OtlpSender;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
@@ -72,6 +72,13 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   @Nullable private final OtlpSender sender;
   private final boolean otelSemanticsMode;
 
+  /**
+   * Resource attribute blob prepended to every payload. In default mode it carries the {@code
+   * datadog.runtime_id} and process-tag resource attributes; in OTel-semantics mode it is the plain
+   * vendor-neutral resource (no {@code datadog.*}).
+   */
+  private final byte[] resourceMessage;
+
   // Need a temporary buffer to know what size to write for the final protobuf buffer
   private final GrowableBuffer buf = new GrowableBuffer(512);
   private final OtlpProtoBuffer protobuf = new OtlpProtoBuffer(8192);
@@ -92,6 +99,10 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   OtlpStatsMetricWriter(@Nullable OtlpSender sender, boolean otelSemanticsMode) {
     this.sender = sender;
     this.otelSemanticsMode = otelSemanticsMode;
+    this.resourceMessage =
+        otelSemanticsMode
+            ? OtlpResourceProto.RESOURCE_MESSAGE
+            : OtlpResourceProto.RESOURCE_MESSAGE_WITH_DATADOG_ATTRS;
   }
 
   @Nullable
@@ -217,7 +228,7 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
       if (payloadBytes == 0) {
         return;
       }
-      payloadBytes += protobuf.recordMessage(RESOURCE_MESSAGE);
+      payloadBytes += protobuf.recordMessage(resourceMessage);
       protobuf.recordMessage(buf, 1, payloadBytes);
 
       if (sender != null) {
