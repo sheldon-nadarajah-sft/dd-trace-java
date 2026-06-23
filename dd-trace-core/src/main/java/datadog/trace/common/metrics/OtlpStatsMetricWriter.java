@@ -55,6 +55,7 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   private static final int DP_TIME_FIELD = 3;
   private static final int DP_ATTRIBUTES_FIELD = 9;
 
+  private static final String SERVICE_NAME = "service.name";
   private static final String SPAN_NAME = "span.name";
   private static final String SPAN_KIND = "span.kind";
   private static final String HTTP_REQUEST_METHOD = "http.request.method";
@@ -71,6 +72,14 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
 
   @Nullable private final OtlpSender sender;
   private final boolean otelSemanticsMode;
+
+  /**
+   * The configured default service, reported once on the resource. A data point only carries its
+   * own {@code service.name} attribute when its span's service differs from this; for the default
+   * service the point inherits the resource value (most-specific-wins at the consumer). {@code
+   * null} disables the per-point comparison (test constructors).
+   */
+  @Nullable private final String defaultService;
 
   /**
    * Resource attribute blob prepended to every payload. In default mode it carries the {@code
@@ -91,14 +100,20 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   private int metricBytes;
 
   public OtlpStatsMetricWriter(Config config) {
-    this(createSender(config), config.isTraceOtelSemanticsEnabled());
+    this(createSender(config), config.isTraceOtelSemanticsEnabled(), config.getServiceName());
   }
 
   // visible for testing: lets tests inject a capturing sender to decode the emitted protobuf and
   // control the semantics mode
   OtlpStatsMetricWriter(@Nullable OtlpSender sender, boolean otelSemanticsMode) {
+    this(sender, otelSemanticsMode, null);
+  }
+
+  OtlpStatsMetricWriter(
+      @Nullable OtlpSender sender, boolean otelSemanticsMode, @Nullable String defaultService) {
     this.sender = sender;
     this.otelSemanticsMode = otelSemanticsMode;
+    this.defaultService = defaultService;
     this.resourceMessage =
         otelSemanticsMode
             ? OtlpResourceProto.RESOURCE_MESSAGE
@@ -174,6 +189,11 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
     // OTel semconv attrs are emitted in both modes
     writeStringAttribute(SPAN_NAME, entry.getResource());
     writeStringAttribute(SPAN_KIND, entry.getSpanKind());
+    // service.name on the point only when the span's service differs from the resource's default;
+    UTF8BytesString service = entry.getService();
+    if (service != null && service.length() > 0 && (!service.toString().equals(defaultService))) {
+      writeStringAttribute(SERVICE_NAME, service);
+    }
     if (entry.hasHttpMethod()) {
       writeStringAttribute(HTTP_REQUEST_METHOD, entry.getHttpMethod());
     }

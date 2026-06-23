@@ -7,18 +7,29 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.WireFormat;
+import datadog.communication.ddagent.DDAgentFeaturesDiscovery;
 import datadog.metrics.api.Histograms;
 import datadog.metrics.impl.DDSketchHistograms;
+import datadog.trace.bootstrap.instrumentation.api.Tags;
+import datadog.trace.core.CoreSpan;
+import datadog.trace.core.SpanKindFilter;
+import datadog.trace.core.monitor.HealthMetrics;
 import datadog.trace.core.otlp.common.OtlpPayload;
 import datadog.trace.core.otlp.common.OtlpSender;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -420,6 +431,126 @@ class OtlpStatsMetricWriterTest {
     assertFalse(bareAttrs.containsKey("http.response.status_code"));
     assertFalse(bareAttrs.containsKey("http.route"));
     assertFalse(bareAttrs.containsKey("rpc.response.status_code"));
+  }
+
+  @Test
+  void serviceNameEmittedOnlyForNonDefaultService() throws IOException {
+    CapturingSender sender = new CapturingSender();
+    // The configured default service ("web") is reported on the resource; only a span whose service
+    // differs from it repeats service.name on its own data point.
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, "web");
+
+    long start = SECONDS.toNanos(1_700_000_000L);
+    writer.startBucket(2, start, SECONDS.toNanos(10));
+    writer.add(serviceEntry("web.request", "web")); // default service
+    writer.add(serviceEntry("db.query", "postgres")); // custom service
+    writer.finishBucket();
+
+    DecodedMetric metric = decode(sender.lastPayload);
+    assertEquals(2, metric.dataPoints.size());
+
+    Map<String, Object> defaultAttrs = null;
+    Map<String, Object> customAttrs = null;
+    for (DataPoint dp : metric.dataPoints) {
+      if ("db.query".equals(dp.attributes.get("datadog.operation.name"))) {
+        customAttrs = dp.attributes;
+      } else {
+        defaultAttrs = dp.attributes;
+      }
+    }
+    assertNotNull(customAttrs, "custom-service data point present");
+    assertNotNull(defaultAttrs, "default-service data point present");
+    assertEquals(
+        "postgres",
+        customAttrs.get("service.name"),
+        "non-default service is carried on its own data point");
+    assertFalse(
+        defaultAttrs.containsKey("service.name"),
+        "default service must not be repeated on its data point");
+  }
+
+  /** An ok-only entry on the given service and operation name, recording a single 1s hit. */
+  private static AggregateEntry serviceEntry(String operationName, String service) {
+    AggregateEntry e =
+        AggregateEntryTestUtils.of(
+            "GET /users",
+            service,
+            operationName,
+            null,
+            "web",
+            0,
+            false,
+            true,
+            "server",
+            null,
+            null,
+            null,
+            null);
+    e.recordOneDuration(SECONDS.toNanos(1));
+    return e;
+  }
+
+  // ── gRPC status extraction (OTLP aggregator path) ─────────────────────────
+
+  @Test
+  void grpcStatusExtractedFromGrpcTypedSpanOnOtlpPath() throws Exception {
+    // Drives the real ConflatingMetricsAggregator on the OTLP path (otlpStatsExportEnabled is true
+    // because the writer is an OtlpStatsMetricWriter): a span typed "grpc" carrying the
+    // grpc.status.code tag must surface rpc.response.status_code, even though that key + span type
+    // are outside the native v0.6 path's single-key + "rpc"-type lookup.
+    CapturingSender sender = new CapturingSender();
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false);
+
+    DDAgentFeaturesDiscovery features = mock(DDAgentFeaturesDiscovery.class);
+    when(features.peerTags()).thenReturn(Collections.<String>emptySet());
+    Sink sink = mock(Sink.class);
+
+    ClientStatsAggregator aggregator =
+        new ClientStatsAggregator(
+            Collections.<String>emptySet(),
+            features,
+            HealthMetrics.NO_OP,
+            sink,
+            writer,
+            /* maxAggregates */ 16,
+            /* queueSize */ 16,
+            /* reportingInterval */ 10,
+            SECONDS,
+            /* includeEndpointInMetrics */ false);
+    try {
+      aggregator.start();
+      aggregator.publish(Collections.<CoreSpan<?>>singletonList(grpcSpan("grpc.status.code", "0")));
+      aggregator.forceReport().get(5, TimeUnit.SECONDS);
+
+      DecodedMetric metric = decode(sender.lastPayload);
+      assertEquals(1, metric.dataPoints.size());
+      assertEquals("0", metric.dataPoints.get(0).attributes.get("rpc.response.status_code"));
+    } finally {
+      aggregator.close();
+    }
+  }
+
+  /** A metrics-eligible, top-level span typed {@code grpc} carrying a single tag. */
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static CoreSpan<?> grpcSpan(String tagKey, String tagValue) {
+    CoreSpan span = mock(CoreSpan.class);
+    when(span.isMeasured()).thenReturn(false);
+    when(span.isTopLevel()).thenReturn(true);
+    when(span.isKind(any(SpanKindFilter.class))).thenReturn(false);
+    when(span.getLongRunningVersion()).thenReturn(0);
+    when(span.getDurationNano()).thenReturn(SECONDS.toNanos(1));
+    when(span.getError()).thenReturn(0);
+    when(span.getResourceName()).thenReturn("grpc.request");
+    when(span.getServiceName()).thenReturn("svc");
+    when(span.getOperationName()).thenReturn("grpc.request");
+    when(span.getServiceNameSource()).thenReturn(null);
+    when(span.getType()).thenReturn("grpc");
+    when(span.getHttpStatusCode()).thenReturn((short) 0);
+    when(span.getParentId()).thenReturn(0L);
+    when(span.getOrigin()).thenReturn(null);
+    when(span.unsafeGetTag(eq(Tags.SPAN_KIND), any(CharSequence.class))).thenReturn("");
+    when(span.unsafeGetTag(tagKey)).thenReturn(tagValue);
+    return span;
   }
 
   @Test
