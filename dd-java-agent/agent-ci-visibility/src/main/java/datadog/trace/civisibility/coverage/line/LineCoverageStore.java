@@ -22,10 +22,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 import org.jacoco.core.analysis.Analyzer;
@@ -46,53 +43,6 @@ public class LineCoverageStore extends ConcurrentCoverageStore<LineProbes> {
    * just isn't cached), this only guards memory for pathologically large suites.
    */
   private static final int MAX_ANALYSIS_CACHE_ENTRIES = 50_000;
-
-  // TEMPORARY evaluation instrumentation (SDTEST-3847 follow-up): measures the ceiling of a
-  // per-class "structural" analysis cache vs the current (class, probe-set) cache, without building
-  // it. parses ≈ distinct (class, probe-set) analyzed; distinctClasses = what a per-class cache
-  // would parse. A high parses/distinctClasses ratio means the structural cache has headroom.
-  // Logged once per JVM at shutdown (telemetry isn't readable in test-environment). Remove or gate
-  // behind a flag before merging.
-  private static final AtomicLong ANALYSIS_LOOKUPS = new AtomicLong();
-  private static final AtomicLong ANALYSIS_PARSES = new AtomicLong();
-  private static final AtomicLong ANALYSIS_PARSE_NANOS = new AtomicLong();
-  private static final Set<Long> ANALYZED_CLASS_IDS = ConcurrentHashMap.newKeySet();
-  private static final AtomicBoolean STATS_HOOK_REGISTERED = new AtomicBoolean();
-
-  private static void registerAnalysisStatsHook() {
-    if (!STATS_HOOK_REGISTERED.compareAndSet(false, true)) {
-      return;
-    }
-    Runtime.getRuntime()
-        .addShutdownHook(new Thread(LineCoverageStore::logAnalysisStats, "dd-line-cov-stats"));
-  }
-
-  private static void logAnalysisStats() {
-    long lookups = ANALYSIS_LOOKUPS.get();
-    if (lookups == 0) {
-      return;
-    }
-    long parses = ANALYSIS_PARSES.get();
-    long distinctClasses = ANALYZED_CLASS_IDS.size();
-    double analyzeMs = ANALYSIS_PARSE_NANOS.get() / 1_000_000.0;
-    double hitRate = 100.0 * (lookups - parses) / lookups;
-    double avgProbeSetsPerClass = distinctClasses == 0 ? 0 : (double) parses / distinctClasses;
-    double structuralHitRate = 100.0 * (lookups - distinctClasses) / lookups;
-    double structuralSavedMs = parses == 0 ? 0 : analyzeMs * (parses - distinctClasses) / parses;
-    log.info(
-        "Line coverage analysis cache stats: lookups={}, parses={} (hitRate={}%), "
-            + "distinctClasses={}, avgProbeSetsPerClass={}, analyzeTime={}ms | per-class structural "
-            + "cache would parse {} (hitRate={}%, ~{}ms saved)",
-        lookups,
-        parses,
-        String.format("%.1f", hitRate),
-        distinctClasses,
-        String.format("%.2f", avgProbeSetsPerClass),
-        String.format("%.0f", analyzeMs),
-        distinctClasses,
-        String.format("%.1f", structuralHitRate),
-        String.format("%.0f", structuralSavedMs));
-  }
 
   private final CiVisibilityMetricCollector metrics;
   private final SourcePathResolver sourcePathResolver;
@@ -198,22 +148,17 @@ public class LineCoverageStore extends ConcurrentCoverageStore<LineProbes> {
     AnalysisCacheKey key =
         new AnalysisCacheKey(
             executionDataAdapter.getClassId(), executionDataAdapter.getProbeActivations());
-    ANALYSIS_LOOKUPS.incrementAndGet(); // eval instrumentation (SDTEST-3847)
-    ANALYZED_CLASS_IDS.add(executionDataAdapter.getClassId()); // eval instrumentation
     BitSet cached = analysisCache.get(key);
     if (cached != null) {
       return cached;
     }
 
     try (InputStream is = Utils.getClassStream(clazz)) {
-      long startNanos = System.nanoTime(); // eval instrumentation
       BitSet coveredLines = new BitSet();
       ExecutionDataStore store = new ExecutionDataStore();
       store.put(executionDataAdapter.toExecutionData());
       Analyzer analyzer = new Analyzer(store, new SourceAnalyzer(coveredLines));
       analyzer.analyzeClass(is, null);
-      ANALYSIS_PARSES.incrementAndGet(); // eval instrumentation
-      ANALYSIS_PARSE_NANOS.addAndGet(System.nanoTime() - startNanos); // eval instrumentation
 
       if (analysisCache.size() < MAX_ANALYSIS_CACHE_ENTRIES) {
         analysisCache.putIfAbsent(key, coveredLines);
@@ -269,7 +214,6 @@ public class LineCoverageStore extends ConcurrentCoverageStore<LineProbes> {
     public Factory(CiVisibilityMetricCollector metrics, SourcePathResolver sourcePathResolver) {
       this.metrics = metrics;
       this.sourcePathResolver = sourcePathResolver;
-      registerAnalysisStatsHook(); // eval instrumentation (SDTEST-3847)
     }
 
     @Override
