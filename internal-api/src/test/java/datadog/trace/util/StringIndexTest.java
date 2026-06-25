@@ -3,6 +3,7 @@ package datadog.trace.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -98,5 +99,73 @@ class StringIndexTest {
     assertEquals(1L, ids[Support.indexOf(d.hashes, d.names, "a")]);
     assertEquals(2L, ids[Support.indexOf(d.hashes, d.names, "b")]);
     assertEquals(3L, ids[Support.indexOf(d.hashes, d.names, "c")]);
+  }
+
+  @Test
+  void mapIntValues_slotAligned_andLookup() {
+    StringIndex idx = StringIndex.of("a", "b", "c");
+    // 1-based ids; 0 stays the empty-slot / not-found sentinel.
+    int[] ids = idx.mapIntValues(s -> s.charAt(0) - 'a' + 1);
+    assertEquals(idx.slots(), ids.length); // sized to the table, not the name count
+
+    assertEquals(1, idx.lookup(ids, "a"));
+    assertEquals(2, idx.lookup(ids, "b"));
+    assertEquals(3, idx.lookup(ids, "c"));
+    assertEquals(0, idx.lookup(ids, "z")); // miss -> 0
+    assertEquals(-1, idx.lookupOrDefault(ids, "z", -1)); // miss -> supplied default
+  }
+
+  @Test
+  void mapLongValues_slotAligned_andLookup() {
+    Data d = Support.create("a", "b", "c");
+    long[] vals = Support.mapLongValues(d.names, s -> s.charAt(0) - 'a' + 1L);
+
+    assertEquals(1L, Support.lookup(d.hashes, d.names, vals, "a"));
+    assertEquals(3L, Support.lookup(d.hashes, d.names, vals, "c"));
+    assertEquals(0L, Support.lookup(d.hashes, d.names, vals, "z")); // miss -> 0
+    assertEquals(-1L, Support.lookupOrDefault(d.hashes, d.names, vals, "z", -1L));
+  }
+
+  @Test
+  void mapValues_objects_typedArray_andLookup() {
+    StringIndex idx = StringIndex.of("a", "bb", "ccc");
+    Integer[] lengths = idx.mapValues(Integer.class, String::length);
+
+    // Class<T> drives a real Integer[], not an Object[].
+    assertEquals(Integer[].class, lengths.getClass());
+
+    assertEquals(Integer.valueOf(1), idx.lookup(lengths, "a"));
+    assertEquals(Integer.valueOf(3), idx.lookup(lengths, "ccc"));
+    assertNull(idx.lookup(lengths, "z")); // miss -> null
+    assertEquals(Integer.valueOf(-1), idx.lookupOrDefault(lengths, "z", -1));
+  }
+
+  @Test
+  void support_mapValues_objects_sizedToSlots_emptyStayNull() {
+    Data d = Support.create("a", "b", "c");
+    String[] tagged = Support.mapValues(d.names, String.class, s -> s + "!");
+
+    assertEquals(d.names.length, tagged.length); // sized to the table
+    int nonNull = 0;
+    for (String s : tagged) {
+      if (s != null) {
+        nonNull++;
+      }
+    }
+    assertEquals(3, nonNull); // only the placed names map; unfilled slots stay null
+
+    assertEquals("a!", Support.lookup(d.hashes, d.names, tagged, "a"));
+    assertEquals("dflt", Support.lookupOrDefault(d.hashes, d.names, tagged, "z", "dflt"));
+  }
+
+  @Test
+  void instance_lookup_delegatesToSupportArrays() {
+    StringIndex idx = StringIndex.of("x", "y");
+    int[] ids = idx.mapIntValues(s -> "x".equals(s) ? 7 : 9);
+
+    assertEquals(7, idx.lookup(ids, "x"));
+    assertEquals(9, idx.lookup(ids, "y"));
+    assertEquals(0, idx.lookup(ids, "missing"));
+    assertEquals(42, idx.lookupOrDefault(ids, "missing", 42));
   }
 }
