@@ -67,6 +67,14 @@ public class StringIndexSwitchBenchmark {
     "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa"
   };
 
+  // A compile-time-constant hit key. javac inlines it, so the JIT can constant-propagate it into an
+  // inlined switch and fold the whole switch away -- the switch's theoretical ceiling. The const_*
+  // arms pair this with INLINE vs DONT_INLINE to show that ceiling only materializes when the call
+  // ALSO inlines: across a DONT_INLINE boundary the constant can't propagate in, so the switch runs
+  // in full. TagInterceptor's real regime is a runtime tag through a non-inlined call -- neither
+  // holds -- which is why StringIndex wins where it counts.
+  static final String CONST_KEY = "mike";
+
   /** Distinct String instances that are never present, for the miss path. */
   static final String[] MISSES = newMisses();
 
@@ -251,5 +259,28 @@ public class StringIndexSwitchBenchmark {
   @Benchmark
   public int stringIndex_miss_noinline(Cursor cursor) {
     return indexNoInline(cursor.nextMiss());
+  }
+
+  // --- constant key: the switch's best case (const-propagated). Inlined -> folds away; not-inlined
+  // -> the constant can't cross the boundary, so the switch runs in full. ---
+
+  @Benchmark
+  public int switch_const_inlined() {
+    return switchInline(CONST_KEY);
+  }
+
+  @Benchmark
+  public int switch_const_noinline() {
+    return switchNoInline(CONST_KEY);
+  }
+
+  @Benchmark
+  public int stringIndex_const_inlined() {
+    return indexInline(CONST_KEY);
+  }
+
+  @Benchmark
+  public int stringIndex_const_noinline() {
+    return indexNoInline(CONST_KEY);
   }
 }
