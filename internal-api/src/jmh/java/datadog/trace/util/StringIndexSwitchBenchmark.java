@@ -23,13 +23,15 @@ import org.openjdk.jmh.annotations.Warmup;
  *       final} arrays (a miss returns 0), the folded-constant hot path.
  * </ul>
  *
- * <p><b>The axis that matters: inlining.</b> A prior investigation found the {@code TagInterceptor}
- * switch wasn't being inlined / constant-propagated into its hot caller, so it ran as a real call.
- * Each form is therefore measured both ways via {@link CompilerControl}: {@code _inlined} (the
- * lookup is inlined into the measured loop) and {@code _noinline} (the lookup is a real call —
- * {@code TagInterceptor}'s actual regime). The teaching point is that the switch can look
- * competitive when inlined but loses ground when it isn't, while the StringIndex {@code Support}
- * path stays flat — so the win is largest exactly where it's needed.
+ * <p><b>What this measures: two axes.</b> A prior investigation found the {@code TagInterceptor}
+ * switch wasn't being inlined / specialized into its hot caller. So each form is measured across
+ * (a) inlining — {@code _inlined} vs {@code _noinline} (a real call, {@code TagInterceptor}'s
+ * actual regime) via {@link CompilerControl} — and (b) key shape — a constant key vs a runtime,
+ * varied key. The results (below) land the teaching point: the dominant axis is
+ * <i>key-constancy</i>, not inlining. At steady state the inline-vs-not gap is small for both
+ * forms; what sinks the switch is a runtime, varied key (it can't specialize), while the
+ * StringIndex {@code Support} path stays flat across both axes — so the win is largest exactly
+ * where {@code TagInterceptor} lives.
  *
  * <p>The {@code _inlined} and {@code _noinline} helpers carry duplicate bodies on purpose: that's
  * the only way to pin each form's inlining decision independently.
