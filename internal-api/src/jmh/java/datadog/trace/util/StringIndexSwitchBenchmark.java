@@ -39,22 +39,33 @@ import org.openjdk.jmh.annotations.Warmup;
  * never present. Run via {@code -Pjmh.includes=StringIndexSwitchBenchmark} (add {@code -prof gc} —
  * should be ~0 B/op both ways; this proves throughput, not allocation).
  *
- * <p>Preliminary JDK 17 numbers (Apple M1, {@code @Fork(2)} spot — a proper {@code @Fork(5)} run is
- * pending; the errors are wide, treat as directional); M ops/s:
+ * <p>JDK 17 results (Apple M1, quiet machine, {@code @Fork(5)}, {@code @Threads(8)}; M ops/s,
+ * ±1–5%):
  *
  * <pre>{@code
- *                            hit     miss
- * switch (inlined)           608    1052
- * switch (not-inlined)       617     904
- * stringIndex (inlined)     1099    1371
- * stringIndex (not-inlined) 1115    1510
+ * key             switch (inl / noinl)   stringIndex (inl / noinl)
+ * const            2735 / 2720            2045 / 2043
+ * hit  (runtime)   1172 / 1156            2197 / 2178
+ * miss             2068 / 2029            2525 / 2528
  * }</pre>
  *
- * StringIndex resolves ~1.8x faster than the switch on hit and ~1.5x on miss, and the win holds
- * whether or not the lookup inlines — the switch's hit path pays a full {@code equals} after the
- * hashCode switch, while StringIndex gates {@code equals} behind a cached-hash check and usually
- * hits the {@code ==} fast path. (At {@code @Fork(2)} the inline-vs-not axis is within noise; the
- * StringIndex-vs-switch gap clears it. This is the use case behind {@code TagInterceptor}.)
+ * <p>Two takeaways:
+ *
+ * <ul>
+ *   <li>The string switch only <i>matches</i> StringIndex in the <b>constant-key</b> corner
+ *       (~2.7B): there the JIT specializes the switch to the single known key — and the {@code
+ *       const} arms show it does so even across a {@code DONT_INLINE} boundary (profile-driven, not
+ *       const-prop-through-inline). Production tags are runtime-varied, so that corner never
+ *       occurs.
+ *   <li>In the realistic regime — a <b>runtime, varied hit key</b>, exactly {@code TagInterceptor}
+ *       — the switch falls to ~1.16B while StringIndex holds ~2.19B (<b>~1.9x</b>). StringIndex is
+ *       flat (~2.0–2.5B) across inline/not-inline <i>and</i> key shape: its throughput doesn't
+ *       depend on the JIT's inlining decisions, which is the whole point. (Misses short-circuit for
+ *       both; StringIndex still ~1.2x.)
+ * </ul>
+ *
+ * <p>So the {@code const} arm is the control: it exposes the switch's "fast" as a single-key
+ * specialization artifact — drop the constant and the switch is ~half StringIndex's throughput.
  */
 @Fork(2)
 @Warmup(iterations = 2)
