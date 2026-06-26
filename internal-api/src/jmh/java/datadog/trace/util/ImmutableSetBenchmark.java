@@ -46,45 +46,44 @@ import org.openjdk.jmh.annotations.Warmup;
  * <p>Lookups are interned (the {@code ==} fast path where a structure has one); misses are short
  * and never present.
  *
- * <p>Java 17 results (Apple M1, {@code @Fork(2)}, {@code @Threads(8)}; M ops/s = millions):
+ * <p>JDK 17 results (Apple M1, quiet machine, {@code @Fork(5)}, {@code @Threads(8)}; M ops/s =
+ * millions):
  *
  * <pre>{@code
  * Structure              hit     miss
- * hashSet               2159     1751    (fastest)
- * tracerImmutableSet    1946     1633    (Set.copyOf / SetN)
- * array                  926      584
- * sortedArray            664      588
- * treeSet                642      593
+ * support (static)      2320     2159    (fastest)
+ * hashSet               2198     2134
+ * stringIndex (inst)    2098     1548 *  (* miss bimodal -- see caveat)
+ * tracerImmutableSet    1914     1663    (Set.copyOf / SetN)
+ * array                  941      589
+ * sortedArray            685      610
+ * treeSet                657      610
  * }</pre>
  *
  * <p>Key findings:
  *
  * <ul>
- *   <li>{@code HashSet} is fastest; {@link java.util.Set#copyOf} ({@code SetN}) trails by only ~10%
- *       on hit and ~7% on miss — and it's the compact, array-backed form the agent already uses for
- *       fixed config sets, so it's a strong default when the set is immutable.
- *   <li>{@code array} / {@code sortedArray} / {@code treeSet} cluster at ~0.6–0.9B — they scan,
- *       binary-search, or tree-walk per lookup, so they trail the hashed structures, most visibly
- *       on the miss path.
+ *   <li>The static {@code Support} path is the fastest membership structure — it beats {@code
+ *       HashSet} on both hit and miss, and crushes the scan/search/tree forms.
+ *   <li>{@code stringIndex} (the instance wrapper) trails {@code Support} by the field-load
+ *       indirection (~10% on hit), landing near {@code HashSet}. Off the hot path that cost is
+ *       fine; on it, prefer {@code Support}.
+ *   <li>{@link java.util.Set#copyOf} ({@code SetN}, the compact array-backed form the agent uses
+ *       for fixed config sets) is ~1.2x behind {@code Support} on hit — but it is the most
+ *       <i>compact</i> (~27% smaller than StringIndex per the JOL test): StringIndex pays for its
+ *       cached {@code int[]} hashes + the 2x-oversized table. So StringIndex's edge over {@code
+ *       SetN} is speed + the {@code indexOf}-&gt;parallel-array capability, NOT footprint; vs
+ *       {@code HashSet} it wins on both.
+ *   <li>{@code array} / {@code sortedArray} / {@code treeSet} scan, binary-search, or tree-walk per
+ *       lookup, so they trail the hashed structures, most visibly on miss.
  * </ul>
  *
- * <p>StringIndex arms — preliminary JDK 17 {@code @Fork(2)} spot (a proper {@code @Fork(5)} run is
- * pending; treat as directional). Absolute scale differs from the table above (separate run), so
- * read the within-block comparison; M ops/s:
- *
- * <pre>{@code
- * Structure             hit      miss
- * support (static)     1389     1288    (fastest)
- * hashSet              1293     1163
- * tracerImmutableSet   1201      890    (SetN)
- * stringIndex (inst)   1180     1119
- * }</pre>
- *
- * The static {@code Support} path is the fastest membership structure here — it beats {@code
- * HashSet} and {@code SetN}, most on miss; the instance wrapper costs ~15–18% (landing near {@code
- * SetN}). So StringIndex's set edge is the static path; the wrapper is roughly SetN-class.
+ * <p><b>Caveat — {@code stringIndex} miss is bimodal:</b> even at {@code @Fork(5)} it measured ±27%
+ * (the <i>instance</i> miss path; static {@code support_miss} is tight, ±0.3%). The wrapper's
+ * field-load indirection interacts with the miss branch to split C2 across forks — read that one
+ * number as approximate, and use {@code Support} where miss latency matters.
  */
-@Fork(2)
+@Fork(5) // 5 forks settle the bimodal stringIndex_miss / interface-dispatch arms (see header)
 @Warmup(iterations = 2)
 @Measurement(iterations = 3)
 @Threads(8)

@@ -43,20 +43,45 @@ import org.openjdk.jmh.infra.Blackhole;
  * {@code *_sameKey} variants reuse the original interned key instances to show the identity fast
  * path — which is the common tracer case, since map keys are typically interned tag-name constants.
  *
- * <p>StringIndex-as-map arms — preliminary JDK 17 {@code @Fork(2)} spot (a proper {@code @Fork(5)}
- * run is pending; treat as directional); M ops/s:
+ * <p>JDK 17 results (Apple M1, quiet machine, {@code @Fork(5)}, {@code @Threads(8)}; M ops/s).
+ * {@code get} uses distinct keys (exercises {@code equals()}); {@code sameKey} reuses the interned
+ * key (the {@code ==} fast path — the common tracer case):
  *
  * <pre>{@code
- *                     distinct   interned(==)
- * support (static)      797        1197
- * stringIndex (inst)    785        1087
- * hashMap               702         977
- * copyOf (MapN)         607         814
+ * Structure              get    sameKey
+ * support (static)      1498     2081    (fastest)
+ * stringIndex (inst)    1363     1900
+ * hashMap               1216     1850
+ * linkedHashMap         1214       -
+ * tagMap                1167     1386
+ * copyOf (MapN)         1049     1364
+ * treeMap                656       -
  * }</pre>
  *
- * StringIndex (both modes) beats {@code HashMap} (~1.2x) and {@code Map.copyOf}/{@code MapN}
- * (~1.5x) on the interned path — and {@code MapN} only materializes the compact form on Java 10+.
- * The static {@code Support} path edges the instance wrapper by ~10% on the interned path.
+ * <p>{@code iterate} (full traversal):
+ *
+ * <pre>{@code
+ * tagMap.forEach        148    (fastest)
+ * linkedHashMap         136
+ * copyOf (MapN)         135
+ * treeMap               134
+ * hashMap               104
+ * tagMap (iterator)      96
+ * }</pre>
+ *
+ * <p>Key findings:
+ *
+ * <ul>
+ *   <li>StringIndex-as-map ({@code Support}) is the fastest {@code get} — beating {@code HashMap}
+ *       and {@code Map.copyOf}/{@code MapN}, most on the interned path; the instance wrapper trails
+ *       it by ~10%. (vs {@code MapN} the edge is speed + the slot/parallel-array capability, not
+ *       footprint — see {@link ImmutableSetBenchmark}.)
+ *   <li>{@code TagMap.forEach} (148) beats its own {@code iterator} (96) by ~1.5x: TagMap's
+ *       structure makes a faithful external {@code Iterator} expensive (externalized cursor +
+ *       skip-empty + per-call re-entry + the iterator allocation) — all of which internal {@code
+ *       forEach} avoids. Traverse TagMap via {@code forEach}, never its iterator; that gap only
+ *       widens as TagMap's entry model grows.
+ * </ul>
  */
 // @Fork(5): get_copyOf* (MapN reached via interface dispatch) is JIT-bimodal at fewer forks — 5
 // forks resolves it (get_copyOf_sameKey measured ±90% at @Fork(2) -> ±1.8% at @Fork(5)).

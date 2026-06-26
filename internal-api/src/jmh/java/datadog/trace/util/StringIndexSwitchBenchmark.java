@@ -46,9 +46,9 @@ import org.openjdk.jmh.annotations.Warmup;
  *
  * <pre>{@code
  * key             switch (inl / noinl)   stringIndex (inl / noinl)
- * const            2735 / 2720            2045 / 2043
- * hit  (runtime)   1172 / 1156            2197 / 2178
- * miss             2068 / 2029            2525 / 2528
+ * const            2778 / 2769            2047 / 2035
+ * hit  (runtime)   1161 / 1166            2147 / 2152
+ * miss             2083 / 2050            2546 / 2539
  * }</pre>
  *
  * <p>Two takeaways:
@@ -60,7 +60,7 @@ import org.openjdk.jmh.annotations.Warmup;
  *       const-prop-through-inline). Production tags are runtime-varied, so that corner never
  *       occurs.
  *   <li>In the realistic regime — a <b>runtime, varied hit key</b>, exactly {@code TagInterceptor}
- *       — the switch falls to ~1.16B while StringIndex holds ~2.19B (<b>~1.9x</b>). StringIndex is
+ *       — the switch falls to ~1.16B while StringIndex holds ~2.15B (<b>~1.85x</b>). StringIndex is
  *       flat (~2.0–2.5B) across inline/not-inline <i>and</i> key shape: its throughput doesn't
  *       depend on the JIT's inlining decisions, which is the whole point. (Misses short-circuit for
  *       both; StringIndex still ~1.2x.)
@@ -69,7 +69,7 @@ import org.openjdk.jmh.annotations.Warmup;
  * <p>So the {@code const} arm is the control: it exposes the switch's "fast" as a single-key
  * specialization artifact — drop the constant and the switch is ~half StringIndex's throughput.
  */
-@Fork(2)
+@Fork(5) // matches the documented @Fork(5) numbers; the switch's const-key arm is profile-bimodal
 @Warmup(iterations = 2)
 @Measurement(iterations = 3)
 @Threads(8)
