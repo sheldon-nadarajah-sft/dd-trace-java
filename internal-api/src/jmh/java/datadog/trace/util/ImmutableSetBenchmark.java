@@ -78,10 +78,14 @@ import org.openjdk.jmh.annotations.Warmup;
  *       lookup, so they trail the hashed structures, most visibly on miss.
  * </ul>
  *
- * <p><b>Caveat — {@code stringIndex} miss is bimodal:</b> even at {@code @Fork(5)} it measured ±27%
- * (the <i>instance</i> miss path; static {@code support_miss} is tight, ±0.3%). The wrapper's
- * field-load indirection interacts with the miss branch to split C2 across forks — read that one
- * number as approximate, and use {@code Support} where miss latency matters.
+ * <p><b>Caveat — the instance {@code stringIndex} miss is bimodal across forks</b> (confirmed at
+ * {@code @Fork(10)}: 6 forks fast, 4 slow, nothing between). ~60% of forks compile to a fast mode
+ * (~2000, ≈ {@code support_miss} — the wrapper indirection is then free) and ~40% to a slow mode
+ * (~1070, ~half); each fork locks one at warmup. So the {@code 1548 ±27%} above is a mode-mix, not
+ * noise. Cause: C2 hoists the instance field-loads ({@code this.hashes}/{@code names}) out of the
+ * miss-path probe loop only in the fast mode; the static {@code Support} path const-folds those
+ * refs and is never bimodal ({@code support_miss} ±0.3%). Prefer {@code Support} where miss latency
+ * matters.
  */
 @Fork(5) // 5 forks settle the bimodal stringIndex_miss / interface-dispatch arms (see header)
 @Warmup(iterations = 2)
