@@ -72,13 +72,6 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   @Nullable private final OtlpSender sender;
   private final boolean otelSemanticsMode;
 
-  /**
-   * Resource attribute blob prepended to every payload. In default mode it carries the {@code
-   * datadog.runtime_id} and process-tag resource attributes; in OTel-semantics mode it is the plain
-   * vendor-neutral resource (no {@code datadog.*}).
-   */
-  private final byte[] resourceMessage;
-
   // Need a temporary buffer to know what size to write for the final protobuf buffer
   private final GrowableBuffer buf = new GrowableBuffer(512);
   private final OtlpProtoBuffer protobuf = new OtlpProtoBuffer(8192);
