@@ -258,4 +258,82 @@ class TagMapReadThroughTest {
     assertTrue(child.values().contains("parent-a"));
     assertFalse(child.values().contains("parent-b"), "shadowed parent value must not appear");
   }
+
+  // --- slice 4: behavior-identical to a copy-down / flat map ---
+
+  @Test
+  void copyIsObservationallyIdentical() {
+    OptimizedTagMap child = (OptimizedTagMap) TagMap.create();
+    child.set("b", "child-b"); // shadows parent "b"
+    child.set("c", "child-c");
+    child.withParent(frozenParent()); // {a, b}
+
+    OptimizedTagMap copy = (OptimizedTagMap) child.copy();
+    assertEquals(child.size(), copy.size());
+    assertEquals("parent-a", copy.getString("a")); // copy still reads through
+    assertEquals("child-b", copy.getString("b"));
+    assertEquals("child-c", copy.getString("c"));
+    assertEquals(collect(child), collect(copy)); // same union
+  }
+
+  @Test
+  void copyIsIndependentlyMutable() {
+    OptimizedTagMap child = (OptimizedTagMap) TagMap.create();
+    child.set("c", "child-c");
+    child.withParent(frozenParent());
+
+    OptimizedTagMap copy = (OptimizedTagMap) child.copy();
+    copy.set("c", "copy-c"); // mutate copy's local
+    copy.remove("a"); // tombstone on copy only
+
+    assertEquals("child-c", child.getString("c"), "original unaffected by copy mutation");
+    assertEquals("parent-a", child.getString("a"), "original still reads through a");
+    assertEquals("copy-c", copy.getString("c"));
+    assertNull(copy.getString("a"));
+  }
+
+  @Test
+  void copyPreservesTombstones() {
+    OptimizedTagMap child = (OptimizedTagMap) TagMap.create();
+    child.withParent(frozenParent());
+    child.remove("a"); // tombstone "a"
+
+    OptimizedTagMap copy = (OptimizedTagMap) child.copy();
+    assertNull(copy.getString("a"), "tombstone must carry into the copy");
+    assertEquals("parent-b", copy.getString("b"));
+  }
+
+  /** The contract that lets the consumer flip mergedTracerTags to a parent. */
+  @Test
+  void readThroughMatchesAnEquivalentFlatMap() {
+    OptimizedTagMap child = (OptimizedTagMap) TagMap.create();
+    child.set("b", "child-b");
+    child.set("c", "child-c");
+    child.withParent(frozenParent());
+
+    OptimizedTagMap flat = (OptimizedTagMap) TagMap.create();
+    flat.set("a", "parent-a");
+    flat.set("b", "child-b");
+    flat.set("c", "child-c");
+
+    assertEquals(flat.size(), child.size());
+    assertEquals(collect(flat), collect(child));
+    assertEquals(flat.keySet(), child.keySet());
+    for (String k : new String[] {"a", "b", "c", "missing"}) {
+      assertEquals(flat.getString(k), child.getString(k), "mismatch for key " + k);
+    }
+  }
+
+  @Test
+  void immutableCopyOfReadThroughIsFrozenAndStillReadsThrough() {
+    OptimizedTagMap child = (OptimizedTagMap) TagMap.create();
+    child.set("c", "child-c");
+    child.withParent(frozenParent());
+
+    OptimizedTagMap frozen = (OptimizedTagMap) child.immutableCopy();
+    assertTrue(frozen.isFrozen());
+    assertEquals("parent-a", frozen.getString("a")); // union preserved
+    assertEquals("child-c", frozen.getString("c"));
+    assertThrows(IllegalStateException.class, () -> frozen.set("x", "y")); // frozen blocks writes
+  }
 }

@@ -1901,7 +1901,14 @@ final class OptimizedTagMap implements TagMap {
   @Override
   public TagMap copy() {
     OptimizedTagMap copy = new OptimizedTagMap();
-    copy.putAllIntoEmptyMap(this);
+    copy.putAllIntoEmptyMap(this); // clones this map's own (local) buckets + size
+    // Preserve read-through: share the frozen parent (immutable -> safe to share) and copy the
+    // tombstones, so the copy is observationally identical to this map (same union) and remains
+    // independently mutable (writes land on the copy's local buckets, never the shared parent).
+    copy.parent = this.parent;
+    if (this.removedFromParent != null) {
+      copy.removedFromParent = new HashSet<>(this.removedFromParent);
+    }
     return copy;
   }
 
