@@ -1965,23 +1965,27 @@ final class OptimizedTagMap implements TagMap {
       }
     }
 
-    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
-    OptimizedTagMap p = this.parent;
-    if (p != null) {
-      Object[] parentBuckets =
-          p.buckets; // leaf parent in phase 1: same length, same bucket per key
-      for (int i = 0; i < parentBuckets.length; ++i) {
-        Object parentBucket = parentBuckets[i];
-        Object localBucket = thisBuckets[i];
-        if (parentBucket instanceof Entry) {
-          Entry pe = (Entry) parentBucket;
-          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
-        } else if (parentBucket instanceof BucketGroup) {
-          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
-            for (int j = 0; j < BucketGroup.LEN; ++j) {
-              Entry pe = g._entryAt(j);
-              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
-            }
+    // read-through: parent entries not shadowed locally or tombstoned. Kept out of line so the
+    // common parent == null path stays byte-identical to before (small / inlinable).
+    if (this.parent != null) {
+      this.forEachParent(consumer);
+    }
+  }
+
+  private void forEachParent(Consumer<? super TagMap.EntryReader> consumer) {
+    Object[] localBuckets = this.buckets;
+    Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
+    for (int i = 0; i < parentBuckets.length; ++i) {
+      Object parentBucket = parentBuckets[i];
+      Object localBucket = localBuckets[i];
+      if (parentBucket instanceof Entry) {
+        Entry pe = (Entry) parentBucket;
+        if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
+      } else if (parentBucket instanceof BucketGroup) {
+        for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+          for (int j = 0; j < BucketGroup.LEN; ++j) {
+            Entry pe = g._entryAt(j);
+            if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
           }
         }
       }
@@ -2006,24 +2010,27 @@ final class OptimizedTagMap implements TagMap {
       }
     }
 
-    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
-    OptimizedTagMap p = this.parent;
-    if (p != null) {
-      Object[] parentBuckets =
-          p.buckets; // leaf parent in phase 1: same length, same bucket per key
-      for (int i = 0; i < parentBuckets.length; ++i) {
-        Object parentBucket = parentBuckets[i];
-        Object localBucket = thisBuckets[i];
-        if (parentBucket instanceof Entry) {
-          Entry pe = (Entry) parentBucket;
-          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, pe);
-        } else if (parentBucket instanceof BucketGroup) {
-          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
-            for (int j = 0; j < BucketGroup.LEN; ++j) {
-              Entry pe = g._entryAt(j);
-              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
-                consumer.accept(thisObj, pe);
-              }
+    // read-through: parent entries not shadowed locally or tombstoned (kept out of line).
+    if (this.parent != null) {
+      this.forEachParent(thisObj, consumer);
+    }
+  }
+
+  private <T> void forEachParent(T thisObj, BiConsumer<T, ? super TagMap.EntryReader> consumer) {
+    Object[] localBuckets = this.buckets;
+    Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
+    for (int i = 0; i < parentBuckets.length; ++i) {
+      Object parentBucket = parentBuckets[i];
+      Object localBucket = localBuckets[i];
+      if (parentBucket instanceof Entry) {
+        Entry pe = (Entry) parentBucket;
+        if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, pe);
+      } else if (parentBucket instanceof BucketGroup) {
+        for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+          for (int j = 0; j < BucketGroup.LEN; ++j) {
+            Entry pe = g._entryAt(j);
+            if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
+              consumer.accept(thisObj, pe);
             }
           }
         }
@@ -2050,24 +2057,28 @@ final class OptimizedTagMap implements TagMap {
       }
     }
 
-    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
-    OptimizedTagMap p = this.parent;
-    if (p != null) {
-      Object[] parentBuckets =
-          p.buckets; // leaf parent in phase 1: same length, same bucket per key
-      for (int i = 0; i < parentBuckets.length; ++i) {
-        Object parentBucket = parentBuckets[i];
-        Object localBucket = thisBuckets[i];
-        if (parentBucket instanceof Entry) {
-          Entry pe = (Entry) parentBucket;
-          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, otherObj, pe);
-        } else if (parentBucket instanceof BucketGroup) {
-          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
-            for (int j = 0; j < BucketGroup.LEN; ++j) {
-              Entry pe = g._entryAt(j);
-              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
-                consumer.accept(thisObj, otherObj, pe);
-              }
+    // read-through: parent entries not shadowed locally or tombstoned (kept out of line).
+    if (this.parent != null) {
+      this.forEachParent(thisObj, otherObj, consumer);
+    }
+  }
+
+  private <T, U> void forEachParent(
+      T thisObj, U otherObj, TriConsumer<T, U, ? super TagMap.EntryReader> consumer) {
+    Object[] localBuckets = this.buckets;
+    Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
+    for (int i = 0; i < parentBuckets.length; ++i) {
+      Object parentBucket = parentBuckets[i];
+      Object localBucket = localBuckets[i];
+      if (parentBucket instanceof Entry) {
+        Entry pe = (Entry) parentBucket;
+        if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, otherObj, pe);
+      } else if (parentBucket instanceof BucketGroup) {
+        for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+          for (int j = 0; j < BucketGroup.LEN; ++j) {
+            Entry pe = g._entryAt(j);
+            if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
+              consumer.accept(thisObj, otherObj, pe);
             }
           }
         }
