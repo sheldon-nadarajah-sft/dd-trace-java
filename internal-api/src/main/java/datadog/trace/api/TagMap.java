@@ -294,6 +294,15 @@ public interface TagMap extends Map<String, Object>, Iterable<TagMap.EntryReader
    */
   int estimateSize();
 
+  /**
+   * Attaches a frozen parent for read-through (level-split phase 1): reads that miss this map's own
+   * entries fall through to {@code parent}, while local entries shadow it and local removals
+   * tombstone it. The parent must be frozen, so it is safely shareable across spans/threads without
+   * synchronization. Single-parent by design in phase 1; generalizing to multiple flattened parents
+   * is additive. Returns {@code this} for chaining.
+   */
+  TagMap withParent(TagMap parent);
+
   abstract class EntryChange {
     public static final EntryRemoval newRemoval(String tag) {
       return new EntryRemoval(tag);
@@ -1920,20 +1929,13 @@ final class OptimizedTagMap implements TagMap {
     }
   }
 
-  /**
-   * Attaches a frozen parent for read-through (level-split phase 1): reads that miss this map's
-   * buckets fall through to {@code parent}, while local entries shadow it. The parent must be
-   * frozen so it is safely shareable across spans/threads without synchronization.
-   *
-   * <p>Package-private — the public, {@code !needsIntercept}-gated wiring lands with the consumer
-   * change. Single-parent by design in phase 1; generalizing to multiple flattened parents (or a
-   * {@code withParents(...)} overload) is additive.
-   */
-  OptimizedTagMap withParent(OptimizedTagMap parent) {
-    if (parent != null && !parent.frozen) {
+  @Override
+  public TagMap withParent(TagMap parent) {
+    OptimizedTagMap p = (OptimizedTagMap) parent;
+    if (p != null && !p.frozen) {
       throw new IllegalStateException("read-through parent must be frozen");
     }
-    this.parent = parent;
+    this.parent = p;
     return this;
   }
 

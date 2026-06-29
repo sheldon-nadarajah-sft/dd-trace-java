@@ -2195,7 +2195,17 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
       // By setting the tags on the context we apply decorators to any tags that have been set via
       // the builder. This is the order that the tags were added previously, but maybe the `tags`
       // set in the builder should come last, so that they override other tags.
-      context.setAllTags(mergedTracerTags, mergedTracerTagsNeedsIntercept);
+      //
+      // mergedTracerTags is trace-level shared state and the precedence floor (everything below
+      // overrides it). When it carries no interceptable tags, attach it as a read-through PARENT
+      // (shared by reference, no per-span copy) instead of copying its entries into the span. When
+      // it does need interception, fall back to copying (the interceptor's per-span side-effects
+      // can't be shared by reference).
+      if (mergedTracerTagsNeedsIntercept) {
+        context.setAllTags(mergedTracerTags, true);
+      } else {
+        context.parentTags(mergedTracerTags);
+      }
       context.setAllTags(tagLedger);
       context.setAllTags(coreTags, coreTagsNeedsIntercept);
       context.setAllTags(rootSpanTags, rootSpanTagsNeedsIntercept);

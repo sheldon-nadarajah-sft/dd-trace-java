@@ -1045,6 +1045,21 @@ public class DDSpanContext
     }
   }
 
+  /**
+   * Attaches {@code parent} as a read-through parent of this span's tags instead of copying its
+   * entries in (level-split phase 1). The parent must be frozen and free of interceptable tags —
+   * the caller gates on {@code !needsIntercept}, since read-through bypasses the per-span
+   * interceptor side-effects that {@link #setAllTags(TagMap, boolean)} applies.
+   */
+  void parentTags(final TagMap parent) {
+    if (parent == null || parent.isEmpty()) {
+      return;
+    }
+    synchronized (unsafeTags) {
+      unsafeTags.withParent(parent);
+    }
+  }
+
   void setAllTags(final TagMap.Ledger ledger) {
     if (ledger == null) {
       return;
