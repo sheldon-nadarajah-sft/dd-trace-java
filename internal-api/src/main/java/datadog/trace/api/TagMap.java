@@ -6,6 +6,7 @@ import java.util.AbstractSet;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -277,6 +278,21 @@ public interface TagMap extends Map<String, Object>, Iterable<TagMap.EntryReader
 
   /** Checks if the TagMap is writable - if not throws {@link IllegalStateException} */
   void checkWriteAccess();
+
+  /**
+   * Cheap, conservative emptiness check: {@code true} guarantees the map is empty; {@code false}
+   * means it may be non-empty. Unlike {@link #isEmpty()} (exact, {@link java.util.Map} contract)
+   * this never resolves read-through parents to an exact union, so it is safe on the hot path.
+   * Prefer it to {@link #isEmpty()} wherever a conservative answer suffices.
+   */
+  boolean isDefinitelyEmpty();
+
+  /**
+   * Cheap upper-bound estimate of the map size ({@code >=} the exact {@link #size()}). Does not
+   * account for read-through shadowing or removals, so it may over-count; intended for capacity
+   * hints. Prefer it to {@link #size()} wherever an upper bound suffices.
+   */
+  int estimateSize();
 
   abstract class EntryChange {
     public static final EntryRemoval newRemoval(String tag) {
@@ -1191,6 +1207,25 @@ final class OptimizedTagMap implements TagMap {
   private int size;
   private boolean frozen;
 
+  /**
+   * Optional frozen parent for read-through (level-split phase 1). When non-null, reads that miss
+   * the local buckets fall through to the parent; a local entry shadows the parent's (local-wins).
+   * Phase 1 is single-parent by design (anti-false-generalization); generalizing to multiple
+   * flattened parents is additive. Must be frozen when attached, so it is safely shareable.
+   */
+  private OptimizedTagMap parent;
+
+  /**
+   * Parent keys removed locally (read-through tombstones). Lazily allocated on the first such
+   * removal; {@code null} both means "no tombstones" and serves as the gate that keeps the hot
+   * paths untouched. Only meaningful when {@link #parent} != null. A tombstone stops read-through
+   * fall-through for its key, so a key removed from a child no longer reads through to the parent.
+   * Kept off the bucket structure deliberately — it is shape-agnostic (bare-Entry vs BucketGroup)
+   * and rare, so it costs a lazy allocation on removal rather than complicating the hot bucket
+   * code.
+   */
+  private Set<String> removedFromParent;
+
   public OptimizedTagMap() {
     // needs to be a power of 2 for bucket masking calculation to work as intended
     this.buckets = new Object[1 << 4];
@@ -1212,12 +1247,62 @@ final class OptimizedTagMap implements TagMap {
 
   @Override
   public int size() {
-    return this.size;
+    // Exact (Map contract). Under read-through resolves the union; prefer estimateSize() for hints.
+    OptimizedTagMap p = this.parent;
+    return p == null ? this.size : this.size + this.visibleParentCount();
+  }
+
+  /**
+   * Exact count of parent entries not shadowed locally or tombstoned (the read-through addition).
+   */
+  private int visibleParentCount() {
+    Object[] parentBuckets = this.parent.buckets;
+    Object[] thisBuckets = this.buckets;
+    int count = 0;
+    for (int i = 0; i < parentBuckets.length; ++i) {
+      Object parentBucket = parentBuckets[i];
+      Object localBucket = thisBuckets[i];
+      if (parentBucket instanceof Entry) {
+        if (parentEntryVisibleInBucket(localBucket, (Entry) parentBucket)) count++;
+      } else if (parentBucket instanceof BucketGroup) {
+        for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+          for (int j = 0; j < BucketGroup.LEN; ++j) {
+            Entry pe = g._entryAt(j);
+            if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) count++;
+          }
+        }
+      }
+    }
+    return count;
   }
 
   @Override
   public boolean isEmpty() {
-    return (this.size == 0);
+    // Exact (Map contract). Under read-through resolves the parent; prefer isDefinitelyEmpty().
+    if (this.size != 0) {
+      return false;
+    }
+    OptimizedTagMap p = this.parent;
+    if (p == null) {
+      return true;
+    }
+    if (this.removedFromParent == null) {
+      // no local entries and no tombstones -> empty iff the parent is empty (nothing shadows it)
+      return p.isEmpty();
+    }
+    // size == 0 with tombstones (rare): empty iff every parent entry is tombstoned
+    return this.visibleParentCount() == 0;
+  }
+
+  @Override
+  public boolean isDefinitelyEmpty() {
+    return this.size == 0 && (this.parent == null || this.parent.isDefinitelyEmpty());
+  }
+
+  @Override
+  public int estimateSize() {
+    // Upper bound: local + parent, ignoring read-through shadowing/removals (over-counts).
+    return this.parent == null ? this.size : this.size + this.parent.estimateSize();
   }
 
   @Deprecated
@@ -1328,24 +1413,55 @@ final class OptimizedTagMap implements TagMap {
 
   @Override
   public Entry getEntry(String tag) {
-    Object[] thisBuckets = this.buckets;
-
-    int hash = TagMap.Entry._hash(tag);
-    int bucketIndex = hash & (thisBuckets.length - 1);
-
-    Object bucket = thisBuckets[bucketIndex];
-    if (bucket == null) {
+    Entry local = this.getLocalEntry(tag);
+    if (local != null) {
+      // Local entry shadows the parent (local-wins) — unchanged hot path.
+      return local;
+    }
+    // Read-through: miss locally, defer to the frozen parent. Single-parent in phase 1.
+    // The tombstone check lives only here, on the cold miss+parent path — the hot local hit above
+    // never touches it.
+    OptimizedTagMap p = this.parent;
+    if (p == null) {
       return null;
-    } else if (bucket instanceof Entry) {
-      Entry tagEntry = (Entry) bucket;
-      if (tagEntry.matches(tag)) return tagEntry;
-    } else if (bucket instanceof BucketGroup) {
-      BucketGroup lastGroup = (BucketGroup) bucket;
+    }
+    if (this.removedFromParent != null && this.removedFromParent.contains(tag)) {
+      return null; // tombstoned: removed locally, do not read through
+    }
+    return p.getEntry(tag);
+  }
 
-      Entry tagEntry = lastGroup.findInChain(hash, tag);
-      return tagEntry;
+  /** Looks up an entry in this map's own buckets only — no read-through to the parent. */
+  private Entry getLocalEntry(String tag) {
+    Object[] thisBuckets = this.buckets;
+    int hash = TagMap.Entry._hash(tag);
+    return findInBucket(thisBuckets[hash & (thisBuckets.length - 1)], hash, tag);
+  }
+
+  /**
+   * Finds an entry by hash/tag within a single bucket object (Entry | BucketGroup chain | null).
+   */
+  private static Entry findInBucket(Object bucket, int hash, String tag) {
+    if (bucket instanceof Entry) {
+      Entry tagEntry = (Entry) bucket;
+      return tagEntry.matches(tag) ? tagEntry : null;
+    } else if (bucket instanceof BucketGroup) {
+      return ((BucketGroup) bucket).findInChain(hash, tag);
     }
     return null;
+  }
+
+  /**
+   * Whether a parent entry is visible through this child at its (shared) bucket: not tombstoned and
+   * not shadowed by a local entry. Exploits universal hashing — by {@code _hash}, the only local
+   * entry that could shadow {@code pe} lives in this map's same-index bucket, so we compare against
+   * {@code localBucket} alone, reusing {@code pe}'s cached hash (no re-hash, no full-map probe).
+   */
+  private boolean parentEntryVisibleInBucket(Object localBucket, Entry pe) {
+    if (this.removedFromParent != null && this.removedFromParent.contains(pe.tag)) {
+      return false; // tombstoned: removed locally
+    }
+    return findInBucket(localBucket, pe.hash(), pe.tag) == null; // not shadowed by a local entry
   }
 
   @Deprecated
@@ -1398,6 +1514,12 @@ final class OptimizedTagMap implements TagMap {
   @Override
   public Entry getAndSet(Entry newEntry) {
     this.checkWriteAccess();
+
+    // Re-setting a key clears any read-through tombstone for it (the new value overrides the
+    // removal). Gated on the lazy field, so this is a no-op for the common no-tombstone case.
+    if (this.removedFromParent != null) {
+      this.removedFromParent.remove(newEntry.tag);
+    }
 
     Object[] thisBuckets = this.buckets;
 
@@ -1714,6 +1836,32 @@ final class OptimizedTagMap implements TagMap {
   public Entry getAndRemove(String tag) {
     this.checkWriteAccess();
 
+    Entry localRemoved = this.removeLocal(tag);
+
+    OptimizedTagMap p = this.parent;
+    if (p != null) {
+      // Read-through: if the parent still exposes this key, removing it must also hide it from
+      // fall-through — install a tombstone. The prior *visible* value (Map.remove contract) is the
+      // local entry if there was one, otherwise the parent's (which we now hide). Single-parent in
+      // phase 1; rare path (only when removing a parent-exposed key).
+      boolean alreadyTombstoned =
+          this.removedFromParent != null && this.removedFromParent.contains(tag);
+      if (!alreadyTombstoned) {
+        Entry parentEntry = p.getEntry(tag);
+        if (parentEntry != null) {
+          if (this.removedFromParent == null) {
+            this.removedFromParent = new HashSet<>();
+          }
+          this.removedFromParent.add(tag);
+          return localRemoved != null ? localRemoved : parentEntry;
+        }
+      }
+    }
+    return localRemoved;
+  }
+
+  /** Removes an entry from this map's own buckets only — no parent/tombstone handling. */
+  private Entry removeLocal(String tag) {
     Object[] thisBuckets = this.buckets;
 
     int hash = TagMap.Entry._hash(tag);
@@ -1765,6 +1913,23 @@ final class OptimizedTagMap implements TagMap {
     }
   }
 
+  /**
+   * Attaches a frozen parent for read-through (level-split phase 1): reads that miss this map's
+   * buckets fall through to {@code parent}, while local entries shadow it. The parent must be
+   * frozen so it is safely shareable across spans/threads without synchronization.
+   *
+   * <p>Package-private — the public, {@code !needsIntercept}-gated wiring lands with the consumer
+   * change. Single-parent by design in phase 1; generalizing to multiple flattened parents (or a
+   * {@code withParents(...)} overload) is additive.
+   */
+  OptimizedTagMap withParent(OptimizedTagMap parent) {
+    if (parent != null && !parent.frozen) {
+      throw new IllegalStateException("read-through parent must be frozen");
+    }
+    this.parent = parent;
+    return this;
+  }
+
   @Override
   public Iterator<EntryReader> iterator() {
     return new EntryReaderIterator(this);
@@ -1792,6 +1957,28 @@ final class OptimizedTagMap implements TagMap {
         thisGroup.forEachInChain(consumer);
       }
     }
+
+    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
+    OptimizedTagMap p = this.parent;
+    if (p != null) {
+      Object[] parentBuckets =
+          p.buckets; // leaf parent in phase 1: same length, same bucket per key
+      for (int i = 0; i < parentBuckets.length; ++i) {
+        Object parentBucket = parentBuckets[i];
+        Object localBucket = thisBuckets[i];
+        if (parentBucket instanceof Entry) {
+          Entry pe = (Entry) parentBucket;
+          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
+        } else if (parentBucket instanceof BucketGroup) {
+          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+            for (int j = 0; j < BucketGroup.LEN; ++j) {
+              Entry pe = g._entryAt(j);
+              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(pe);
+            }
+          }
+        }
+      }
+    }
   }
 
   @Override
@@ -1809,6 +1996,30 @@ final class OptimizedTagMap implements TagMap {
         BucketGroup thisGroup = (BucketGroup) thisBucket;
 
         thisGroup.forEachInChain(thisObj, consumer);
+      }
+    }
+
+    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
+    OptimizedTagMap p = this.parent;
+    if (p != null) {
+      Object[] parentBuckets =
+          p.buckets; // leaf parent in phase 1: same length, same bucket per key
+      for (int i = 0; i < parentBuckets.length; ++i) {
+        Object parentBucket = parentBuckets[i];
+        Object localBucket = thisBuckets[i];
+        if (parentBucket instanceof Entry) {
+          Entry pe = (Entry) parentBucket;
+          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, pe);
+        } else if (parentBucket instanceof BucketGroup) {
+          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+            for (int j = 0; j < BucketGroup.LEN; ++j) {
+              Entry pe = g._entryAt(j);
+              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
+                consumer.accept(thisObj, pe);
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1829,6 +2040,30 @@ final class OptimizedTagMap implements TagMap {
         BucketGroup thisGroup = (BucketGroup) thisBucket;
 
         thisGroup.forEachInChain(thisObj, otherObj, consumer);
+      }
+    }
+
+    // read-through: emit parent entries not shadowed locally or tombstoned (bucket-aligned merge)
+    OptimizedTagMap p = this.parent;
+    if (p != null) {
+      Object[] parentBuckets =
+          p.buckets; // leaf parent in phase 1: same length, same bucket per key
+      for (int i = 0; i < parentBuckets.length; ++i) {
+        Object parentBucket = parentBuckets[i];
+        Object localBucket = thisBuckets[i];
+        if (parentBucket instanceof Entry) {
+          Entry pe = (Entry) parentBucket;
+          if (parentEntryVisibleInBucket(localBucket, pe)) consumer.accept(thisObj, otherObj, pe);
+        } else if (parentBucket instanceof BucketGroup) {
+          for (BucketGroup g = (BucketGroup) parentBucket; g != null; g = g.prev) {
+            for (int j = 0; j < BucketGroup.LEN; ++j) {
+              Entry pe = g._entryAt(j);
+              if (pe != null && parentEntryVisibleInBucket(localBucket, pe)) {
+                consumer.accept(thisObj, otherObj, pe);
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1895,7 +2130,10 @@ final class OptimizedTagMap implements TagMap {
     if (this.size != this.computeSize()) {
       throw new IllegalStateException("incorrect size");
     }
-    if (this.isEmpty() != this.checkIfEmpty()) {
+    // Local-structure invariant: the size counter's emptiness must match the local buckets. Uses
+    // the
+    // local (this.size == 0), NOT isEmpty(), which under read-through resolves the parent too.
+    if ((this.size == 0) != this.checkIfEmpty()) {
       throw new IllegalStateException("incorrect empty status");
     }
   }
@@ -2013,7 +2251,12 @@ final class OptimizedTagMap implements TagMap {
   }
 
   abstract static class IteratorBase {
-    private final Object[] buckets;
+    private final OptimizedTagMap map;
+    private final Object[] localBuckets;
+
+    // current array being walked: local buckets first, then the parent's (read-through union)
+    private Object[] buckets;
+    private boolean inParent = false;
 
     private Entry nextEntry;
 
@@ -2023,18 +2266,16 @@ final class OptimizedTagMap implements TagMap {
     private int groupIndex = 0;
 
     IteratorBase(OptimizedTagMap map) {
+      this.map = map;
+      this.localBuckets = map.buckets;
       this.buckets = map.buckets;
     }
 
     public final boolean hasNext() {
       if (this.nextEntry != null) return true;
 
-      while (this.bucketIndex < this.buckets.length) {
-        this.nextEntry = this.advance();
-        if (this.nextEntry != null) return true;
-      }
-
-      return false;
+      this.nextEntry = this.advance();
+      return this.nextEntry != null;
     }
 
     final Entry nextEntryOrThrowNoSuchElement() {
@@ -2062,6 +2303,35 @@ final class OptimizedTagMap implements TagMap {
     }
 
     private final Entry advance() {
+      while (true) {
+        Entry tagEntry = this.rawAdvance();
+        if (tagEntry != null) {
+          // local entries emit as-is; parent entries only if not shadowed locally or tombstoned.
+          // bucketIndex indexes the parent buckets here, which (universal hashing) line up with the
+          // same-index local bucket — so localBuckets[bucketIndex] is the bucket that could shadow.
+          if (!this.inParent
+              || this.map.parentEntryVisibleInBucket(
+                  this.localBuckets[this.bucketIndex], tagEntry)) {
+            return tagEntry;
+          }
+          continue; // parent entry shadowed/tombstoned -> skip
+        }
+
+        // current array exhausted; switch to the parent's buckets once (read-through union)
+        if (!this.inParent && this.map.parent != null) {
+          this.inParent = true;
+          this.buckets = this.map.parent.buckets;
+          this.bucketIndex = -1;
+          this.group = null;
+          this.groupIndex = 0;
+          continue;
+        }
+        return null;
+      }
+    }
+
+    /** Next raw entry in the current bucket array, ignoring shadowing/tombstones. */
+    private final Entry rawAdvance() {
       while (this.bucketIndex < this.buckets.length) {
         if (this.group != null) {
           for (++this.groupIndex; this.groupIndex < BucketGroup.LEN; ++this.groupIndex) {
@@ -2579,12 +2849,12 @@ final class OptimizedTagMap implements TagMap {
 
     @Override
     public int size() {
-      return this.map.computeSize();
+      return this.map.size();
     }
 
     @Override
     public boolean isEmpty() {
-      return this.map.checkIfEmpty();
+      return this.map.isEmpty();
     }
 
     @Override
@@ -2604,12 +2874,12 @@ final class OptimizedTagMap implements TagMap {
 
     @Override
     public int size() {
-      return this.map.computeSize();
+      return this.map.size();
     }
 
     @Override
     public boolean isEmpty() {
-      return this.map.checkIfEmpty();
+      return this.map.isEmpty();
     }
 
     @Override
@@ -2643,12 +2913,12 @@ final class OptimizedTagMap implements TagMap {
 
     @Override
     public int size() {
-      return this.map.computeSize();
+      return this.map.size();
     }
 
     @Override
     public boolean isEmpty() {
-      return this.map.checkIfEmpty();
+      return this.map.isEmpty();
     }
 
     @Override
