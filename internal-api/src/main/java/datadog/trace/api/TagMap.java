@@ -1206,13 +1206,20 @@ final class OptimizedTagMap implements TagMap {
   // and TagMap's EMPTY constant reads back through the factory into here; deferring the build
   // to a separate holder keeps that read from observing a half-initialized static.
   static final class EmptyHolder {
-    // Using special constructor that creates a frozen view of an existing array.
-    // Bucket calculation requires that array length is a power of 2; size 0 fails with
-    // ArrayIndexOutOfBoundsException, but size 1 works.
-    static final OptimizedTagMap EMPTY = new OptimizedTagMap(new Object[1], 0);
+    // Frozen empty view. Allocates its OWN length-16 (power-of-two) array rather than reading
+    // OptimizedTagMap.EMPTY_BUCKETS: this nested class can initialize before OptimizedTagMap's
+    // <clinit> sets that static, which would leave EMPTY with null buckets. One-time singleton,
+    // frozen so never written.
+    static final OptimizedTagMap EMPTY = new OptimizedTagMap(new Object[1 << 4], 0);
   }
 
-  private final Object[] buckets;
+  // Shared immutable empty buckets (all null, length 16). Every map points here until its first
+  // custom-tag write copies-on-write to a private array (materializeBuckets), so an all-known /
+  // known-heavy map (e.g. the trace-tier read-through parent) allocates ZERO buckets. Length is
+  // always 16, so reads need no null guard and read-through bucket alignment (hash & 15) holds.
+  private static final Object[] EMPTY_BUCKETS = new Object[1 << 4];
+
+  private Object[] buckets;
   private int size;
   private boolean frozen;
 
@@ -1262,8 +1269,9 @@ final class OptimizedTagMap implements TagMap {
   private Set<String> removedFromParent;
 
   public OptimizedTagMap() {
-    // needs to be a power of 2 for bucket masking calculation to work as intended
-    this.buckets = new Object[1 << 4];
+    // Start on the shared empty buckets; materializeBuckets() COWs to a private power-of-two array
+    // on the first custom-tag write. All-known maps never allocate buckets.
+    this.buckets = EMPTY_BUCKETS;
     this.size = 0;
     this.frozen = false;
   }
@@ -1674,6 +1682,16 @@ final class OptimizedTagMap implements TagMap {
     return this.putKnownValue(id, value);
   }
 
+  /** Copy-on-write the shared empty buckets to a private array on the first bucket write. */
+  private Object[] materializeBuckets() {
+    Object[] b = this.buckets;
+    if (b == EMPTY_BUCKETS) {
+      b = new Object[1 << 4];
+      this.buckets = b;
+    }
+    return b;
+  }
+
   /** Stores an entry in the hash buckets — the unknown/custom-tag path. */
   private Entry getAndSetBucket(Entry newEntry) {
     this.checkWriteAccess();
@@ -1684,7 +1702,7 @@ final class OptimizedTagMap implements TagMap {
       this.removedFromParent.remove(newEntry.tag);
     }
 
-    Object[] thisBuckets = this.buckets;
+    Object[] thisBuckets = this.materializeBuckets();
 
     int newHash = newEntry.hash();
     int bucketIndex = newHash & (thisBuckets.length - 1);
@@ -1833,7 +1851,9 @@ final class OptimizedTagMap implements TagMap {
   }
 
   private void putAllMerge(OptimizedTagMap that) {
-    Object[] thisBuckets = this.buckets;
+    // COW our buckets only if the source has bucket entries to merge in; otherwise the loop below
+    // writes nothing and the shared empty buckets stay shared.
+    Object[] thisBuckets = (that.size > 0) ? this.materializeBuckets() : this.buckets;
     Object[] thatBuckets = that.buckets;
 
     // Since TagMap-s don't support expansion, buckets are perfectly aligned
@@ -1955,27 +1975,31 @@ final class OptimizedTagMap implements TagMap {
    * Specially optimized version of putAll for the common case of destination map being empty
    */
   private void putAllIntoEmptyMap(OptimizedTagMap that) {
-    Object[] thisBuckets = this.buckets;
-    Object[] thatBuckets = that.buckets;
+    // Only copy buckets (and COW ours) when the source actually has bucket entries; an all-known
+    // source leaves us on the shared empty buckets.
+    if (that.size > 0) {
+      Object[] thisBuckets = this.materializeBuckets();
+      Object[] thatBuckets = that.buckets;
 
-    // Check against both thisBuckets.length && thatBuckets.length is to help the JIT do bound check
-    // elimination
-    for (int i = 0; i < thisBuckets.length && i < thatBuckets.length; ++i) {
-      Object thatBucket = thatBuckets[i];
+      // Check against both thisBuckets.length && thatBuckets.length is to help the JIT do bound
+      // check elimination
+      for (int i = 0; i < thisBuckets.length && i < thatBuckets.length; ++i) {
+        Object thatBucket = thatBuckets[i];
 
-      // faster to explicitly null check first, then do instanceof
-      if (thatBucket == null) {
-        // do nothing
-      } else if (thatBucket instanceof BucketGroup) {
-        // if it is a BucketGroup, then need to clone
-        BucketGroup thatGroup = (BucketGroup) thatBucket;
+        // faster to explicitly null check first, then do instanceof
+        if (thatBucket == null) {
+          // do nothing
+        } else if (thatBucket instanceof BucketGroup) {
+          // if it is a BucketGroup, then need to clone
+          BucketGroup thatGroup = (BucketGroup) thatBucket;
 
-        thisBuckets[i] = thatGroup.cloneChain();
-      } else { // if ( thatBucket instanceof Entry )
-        thisBuckets[i] = thatBucket;
+          thisBuckets[i] = thatGroup.cloneChain();
+        } else { // if ( thatBucket instanceof Entry )
+          thisBuckets[i] = thatBucket;
+        }
       }
+      this.size = that.size;
     }
-    this.size = that.size;
 
     // clone the dense known-tag store (values are immutable boxes/objects -> safe to share refs)
     if (that.knownCount > 0) {
@@ -2363,7 +2387,8 @@ final class OptimizedTagMap implements TagMap {
   public void clear() {
     this.checkWriteAccess();
 
-    Arrays.fill(this.buckets, null);
+    // Drop the private bucket array back to the shared empty sentinel (also avoids mutating it).
+    this.buckets = EMPTY_BUCKETS;
     this.size = 0;
     this.knownIds = null;
     this.knownValues = null;

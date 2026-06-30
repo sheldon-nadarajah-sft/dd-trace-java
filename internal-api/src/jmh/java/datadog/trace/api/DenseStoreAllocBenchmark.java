@@ -56,7 +56,9 @@ public class DenseStoreAllocBenchmark {
         Tags.PEER_PORT,
       };
 
-  @Param({"today", "dense"})
+  // today = all custom (all bucket, what ships now); dense = ~70% known + custom (a real span);
+  // allKnown = 100% known (the trace-tier read-through parent's shape — exercises lazy buckets).
+  @Param({"today", "dense", "allKnown"})
   String scenario;
 
   @Param({"7", "12"})
@@ -68,8 +70,14 @@ public class DenseStoreAllocBenchmark {
   @Setup(Level.Trial)
   public void setup() {
     KnownTagIds.init(); // registers the real (allocation-free) resolver
-    // 'dense' routes ~70% of tags to the dense store via real known names; 'today' is all custom.
-    int knownCount = "dense".equals(scenario) ? (tagCount * 7) / 10 : 0;
+    int knownCount;
+    if ("allKnown".equals(scenario)) {
+      knownCount = tagCount; // 100% known (<= KNOWN.length)
+    } else if ("dense".equals(scenario)) {
+      knownCount = (tagCount * 7) / 10; // ~70% known + custom
+    } else {
+      knownCount = 0; // today: all custom (all bucket)
+    }
     this.keys = new String[tagCount];
     this.values = new String[tagCount];
     for (int i = 0; i < tagCount; i++) {
