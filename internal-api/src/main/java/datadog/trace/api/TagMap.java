@@ -1603,7 +1603,7 @@ final class OptimizedTagMap implements TagMap {
   @Deprecated
   @Override
   public Object put(String tag, Object value) {
-    TagMap.Entry entry = this.getAndSet(Entry.newAnyEntry(tag, value));
+    TagMap.Entry entry = this.getAndSet(tag, value);
     return entry == null ? null : entry.objectValue();
   }
 
@@ -1612,57 +1612,76 @@ final class OptimizedTagMap implements TagMap {
     this.getAndSet(newEntryReader.entry());
   }
 
+  // The set(String, ...) family delegates to the matching getAndSet(String, ...) overload, which
+  // routes known tags to the dense store BEFORE constructing any Entry (so a known-tag set
+  // allocates no Entry). The discarded return is free on the common first-set path (prior == null).
   @Override
   public void set(String tag, Object value) {
-    this.getAndSet(Entry.newAnyEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, CharSequence value) {
-    this.getAndSet(Entry.newObjectEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, boolean value) {
-    this.getAndSet(Entry.newBooleanEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, int value) {
-    this.getAndSet(Entry.newIntEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, long value) {
-    this.getAndSet(Entry.newLongEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, float value) {
-    this.getAndSet(Entry.newFloatEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public void set(String tag, double value) {
-    this.getAndSet(Entry.newDoubleEntry(tag, value));
+    this.getAndSet(tag, value);
   }
 
   @Override
   public Entry getAndSet(Entry newEntry) {
+    // Entry-based path (set(EntryReader), entry-sharing). The Entry is already constructed by the
+    // caller, so a known tag keeps its value densely and drops the Entry. The hot string/typed
+    // setters route to dense BEFORE constructing an Entry (see set/getAndSet(String, ...)) so a
+    // known-tag set allocates no Entry at all.
+    long id = KnownTags.keyOf(newEntry.tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, newEntry.tag, newEntry.objectValue())
+        : this.getAndSetBucket(newEntry);
+  }
+
+  /**
+   * Stores a known tag's (resolved id, value) densely with NO Entry retained — the alloc win.
+   * Returns the prior value materialized as an Entry (Map contract); {@code set} discards it.
+   */
+  private Entry getAndSetKnown(long id, String tag, Object value) {
+    this.checkWriteAccess();
+    if (this.removedFromParent != null) {
+      this.removedFromParent.remove(tag);
+    }
+    return this.putKnownValue(id, value);
+  }
+
+  /** Stores an entry in the hash buckets — the unknown/custom-tag path. */
+  private Entry getAndSetBucket(Entry newEntry) {
     this.checkWriteAccess();
 
     // Re-setting a key clears any read-through tombstone for it (the new value overrides the
     // removal). Gated on the lazy field, so this is a no-op for the common no-tombstone case.
     if (this.removedFromParent != null) {
       this.removedFromParent.remove(newEntry.tag);
-    }
-
-    // Known tag -> dense store, NO Entry retained (the alloc win). keyOf is a no-op until a
-    // resolver
-    // is registered, so this branch is dead and the bucket path below is byte-identical in prod.
-    long id = KnownTags.keyOf(newEntry.tag);
-    if (KnownTags.isStored(id)) {
-      return this.putKnownValue(id, newEntry.objectValue());
     }
 
     Object[] thisBuckets = this.buckets;
@@ -1710,39 +1729,63 @@ final class OptimizedTagMap implements TagMap {
     return null;
   }
 
+  // Each getAndSet(String, ...) resolves keyOf FIRST: a known tag stores its value densely with no
+  // Entry (boxing the primitive only on this branch); a custom tag falls back to the typed Entry
+  // (no boxing for primitives, preserving the bucket store's no-box property).
   @Override
   public Entry getAndSet(String tag, Object value) {
-    return this.getAndSet(Entry.newAnyEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, value)
+        : this.getAndSetBucket(Entry.newAnyEntry(tag, value));
   }
 
   @Override
   public Entry getAndSet(String tag, CharSequence value) {
-    return this.getAndSet(Entry.newObjectEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, value)
+        : this.getAndSetBucket(Entry.newObjectEntry(tag, value));
   }
 
   @Override
   public TagMap.Entry getAndSet(String tag, boolean value) {
-    return this.getAndSet(Entry.newBooleanEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, Boolean.valueOf(value))
+        : this.getAndSetBucket(Entry.newBooleanEntry(tag, value));
   }
 
   @Override
   public TagMap.Entry getAndSet(String tag, int value) {
-    return this.getAndSet(Entry.newIntEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, Integer.valueOf(value))
+        : this.getAndSetBucket(Entry.newIntEntry(tag, value));
   }
 
   @Override
   public TagMap.Entry getAndSet(String tag, long value) {
-    return this.getAndSet(Entry.newLongEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, Long.valueOf(value))
+        : this.getAndSetBucket(Entry.newLongEntry(tag, value));
   }
 
   @Override
   public TagMap.Entry getAndSet(String tag, float value) {
-    return this.getAndSet(Entry.newFloatEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, Float.valueOf(value))
+        : this.getAndSetBucket(Entry.newFloatEntry(tag, value));
   }
 
   @Override
   public TagMap.Entry getAndSet(String tag, double value) {
-    return this.getAndSet(Entry.newDoubleEntry(tag, value));
+    long id = KnownTags.keyOf(tag);
+    return KnownTags.isStored(id)
+        ? this.getAndSetKnown(id, tag, Double.valueOf(value))
+        : this.getAndSetBucket(Entry.newDoubleEntry(tag, value));
   }
 
   public void putAll(Map<? extends String, ? extends Object> map) {
