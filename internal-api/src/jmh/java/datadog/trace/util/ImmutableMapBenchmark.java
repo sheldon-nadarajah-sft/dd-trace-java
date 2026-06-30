@@ -34,10 +34,10 @@ import org.openjdk.jmh.infra.Blackhole;
  * immutable-map baseline, not {@code HashMap}.
  *
  * <p>Also compared: {@link StringIndex} used as a string-&gt;int map — an open-addressed index plus
- * a slot-aligned {@code int[]} of values ({@code SI_VALUES[indexOf(key)]}). {@code
- * stringIndex_get*} goes through the instance wrapper; {@code support_get*} reads via {@code static
- * final} arrays (the JIT folds the refs). No {@code iterate} arm — StringIndex is a lookup index,
- * not an iteration structure; its map use case is the {@code indexOf}-&gt;parallel-array read.
+ * a slot-aligned {@code int[]} of values ({@code SI_VALUES[indexOf(key)]}). {@code stringIndex_get*}
+ * goes through the instance wrapper; {@code support_get*} reads via {@code static final} arrays (the
+ * JIT folds the refs). No {@code iterate} arm — StringIndex is a lookup index, not an iteration
+ * structure; its map use case is the {@code indexOf}-&gt;parallel-array read.
  *
  * <p>Lookups use {@code EQUAL_KEYS} (distinct String instances) to exercise {@code equals()};
  * {@code *_sameKey} variants reuse the original interned key instances to show the identity fast
@@ -54,7 +54,7 @@ import org.openjdk.jmh.infra.Blackhole;
  * hashMap               1216     1850
  * linkedHashMap         1214       -
  * tagMap                1167     1386
- * copyOf (MapN)         1049     1364
+ * tracerImmutableMap    1049     1364    (MapN)
  * treeMap                656       -
  * }</pre>
  *
@@ -63,7 +63,7 @@ import org.openjdk.jmh.infra.Blackhole;
  * <pre>{@code
  * tagMap.forEach        148    (fastest)
  * linkedHashMap         136
- * copyOf (MapN)         135
+ * tracerImmutableMap    135    (MapN)
  * treeMap               134
  * hashMap               104
  * tagMap (iterator)      96
@@ -83,8 +83,10 @@ import org.openjdk.jmh.infra.Blackhole;
  *       widens as TagMap's entry model grows.
  * </ul>
  */
-// @Fork(5): get_copyOf* (MapN reached via interface dispatch) is JIT-bimodal at fewer forks — 5
-// forks resolves it (get_copyOf_sameKey measured ±90% at @Fork(2) -> ±1.8% at @Fork(5)).
+// @Fork(5): get_tracerImmutableMap* (MapN reached via interface dispatch) is JIT-bimodal at fewer
+// forks — 5
+// forks resolves it (get_tracerImmutableMap_sameKey measured ±90% at @Fork(2) -> ±1.8% at
+// @Fork(5)).
 @Fork(5)
 @Warmup(iterations = 2)
 @Measurement(iterations = 3)
@@ -136,7 +138,7 @@ public class ImmutableMapBenchmark {
   LinkedHashMap<String, Integer> linkedHashMap;
   TreeMap<String, Integer> treeMap;
   TagMap tagMap;
-  Map<String, Integer> copyOfMap;
+  Map<String, Integer> tracerImmutableMap;
   StringIndex stringIndex;
 
   @Setup(Level.Trial)
@@ -152,7 +154,7 @@ public class ImmutableMapBenchmark {
       tagMap.set(INSERTION_KEYS[i], i); // primitive support
     }
     // JDK compact immutable map (MapN on Java 10+); the agent's actual fixed-map representation.
-    copyOfMap = CollectionUtils.tryMakeImmutableMap(hashMap);
+    tracerImmutableMap = CollectionUtils.tryMakeImmutableMap(hashMap);
     stringIndex = StringIndex.of(INSERTION_KEYS);
   }
 
@@ -245,18 +247,18 @@ public class ImmutableMapBenchmark {
   }
 
   @Benchmark
-  public Integer get_copyOf(Cursor cursor) {
-    return copyOfMap.get(cursor.nextKey());
+  public Integer get_tracerImmutableMap(Cursor cursor) {
+    return tracerImmutableMap.get(cursor.nextKey());
   }
 
   @Benchmark
-  public Integer get_copyOf_sameKey(Cursor cursor) {
-    return copyOfMap.get(cursor.nextKey(INSERTION_KEYS));
+  public Integer get_tracerImmutableMap_sameKey(Cursor cursor) {
+    return tracerImmutableMap.get(cursor.nextKey(INSERTION_KEYS));
   }
 
   @Benchmark
-  public void iterate_copyOf(Blackhole blackhole) {
-    for (Map.Entry<String, Integer> entry : copyOfMap.entrySet()) {
+  public void iterate_tracerImmutableMap(Blackhole blackhole) {
+    for (Map.Entry<String, Integer> entry : tracerImmutableMap.entrySet()) {
       blackhole.consume(entry.getKey());
       blackhole.consume(entry.getValue());
     }
