@@ -306,5 +306,13 @@ public final class KnownTagIds {
     KnownTags.register(RESOLVER);
   }
 
+  /**
+   * Forces resolver registration. Merely invoking this static method runs {@code <clinit>} (which
+   * registers {@link #RESOLVER}), so calling it once at tracer init flips the dense store live;
+   * idempotent. Until something references this class the registry stays dormant and {@code keyOf}
+   * returns 0, so tag storage is byte-identical to the bucket-only behavior.
+   */
+  public static void init() {}
+
   private KnownTagIds() {}
 }
