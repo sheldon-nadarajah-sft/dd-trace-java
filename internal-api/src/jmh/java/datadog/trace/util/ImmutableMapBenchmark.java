@@ -34,10 +34,10 @@ import org.openjdk.jmh.infra.Blackhole;
  * immutable-map baseline, not {@code HashMap}.
  *
  * <p>Also compared: {@link StringIndex} used as a string-&gt;int map — an open-addressed index plus
- * a slot-aligned {@code int[]} of values ({@code SI_VALUES[indexOf(key)]}). {@code stringIndex_get*}
- * goes through the instance wrapper; {@code support_get*} reads via {@code static final} arrays (the
- * JIT folds the refs). No {@code iterate} arm — StringIndex is a lookup index, not an iteration
- * structure; its map use case is the {@code indexOf}-&gt;parallel-array read.
+ * a slot-aligned {@code int[]} of values ({@code SI_VALUES[indexOf(key)]}). {@code
+ * stringIndex_get*} goes through the instance wrapper; {@code support_get*} reads via {@code static
+ * final} arrays (the JIT folds the refs). No {@code iterate} arm — StringIndex is a lookup index,
+ * not an iteration structure; its map use case is the {@code indexOf}-&gt;parallel-array read.
  *
  * <p>Lookups use {@code EQUAL_KEYS} (distinct String instances) to exercise {@code equals()};
  * {@code *_sameKey} variants reuse the original interned key instances to show the identity fast
