@@ -270,6 +270,7 @@ dependencies {
   api("com.datadoghq:dd-javac-plugin-client:0.2.2")
 
   testImplementation("org.snakeyaml:snakeyaml-engine:2.9")
+  testImplementation("org.openjdk.jol:jol-core:0.17") // StringIndexFootprintTest object-layout measurement
   testImplementation(project(":utils:test-utils"))
   testImplementation(libs.bundles.junit5)
   testImplementation("org.junit.vintage:junit-vintage-engine:${libs.versions.junit5.get()}")
