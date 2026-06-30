@@ -1217,6 +1217,32 @@ final class OptimizedTagMap implements TagMap {
   private boolean frozen;
 
   /**
+   * Dense known-tag store (dense-tagmap-design §5). Values for KNOWN tags (those {@link
+   * KnownTags#keyOf} resolves to a stored id) live in these INSERTION-ORDERED parallel arrays with
+   * NO per-tag {@link Entry} object — the allocation win. Lazily allocated on the first known-tag
+   * write ({@code null} until then, so all-unknown maps pay nothing) and grown x2 from {@link
+   * #KNOWN_INIT_CAP}. Matched by globalSerial via a linear scan ({@link #knownIndexOf}); reads
+   * aren't hot, so O(knownCount) is fine and positional indexing is deferred. Dormant until a
+   * resolver is registered: {@code keyOf} returns 0, so nothing routes here and production is
+   * byte-identical.
+   *
+   * <p>Disjoint from {@link #buckets} by construction: known-ness is global ({@code keyOf} is
+   * deterministic), so a known tag is ALWAYS dense and never bucketed, and vice-versa. That
+   * disjointness keeps read-through shadow checks within-region — a parent dense entry can only be
+   * shadowed by a local dense entry of the same id, a parent bucket entry only by a local bucket
+   * entry — so the existing bucket read-through code is unchanged.
+   *
+   * <p>{@link #size} counts bucket entries only; {@link #knownCount} counts dense entries; the
+   * local total is {@code size + knownCount}.
+   */
+  private long[] knownIds;
+
+  private Object[] knownValues;
+  private int knownCount;
+
+  private static final int KNOWN_INIT_CAP = 8;
+
+  /**
    * Optional frozen parent for read-through (level-split phase 1). When non-null, reads that miss
    * the local buckets fall through to the parent; a local entry shadows the parent's (local-wins).
    * Phase 1 is single-parent by design (anti-false-generalization); generalizing to multiple
@@ -1257,17 +1283,24 @@ final class OptimizedTagMap implements TagMap {
   @Override
   public int size() {
     // Exact (Map contract). Under read-through resolves the union; prefer estimateSize() for hints.
+    int local = this.size + this.knownCount; // buckets + dense
     OptimizedTagMap p = this.parent;
-    return p == null ? this.size : this.size + this.visibleParentCount();
+    return p == null ? local : local + this.visibleParentCount();
   }
 
   /**
    * Exact count of parent entries not shadowed locally or tombstoned (the read-through addition).
    */
   private int visibleParentCount() {
+    int count = 0;
+    // parent dense entries not shadowed by a local dense entry / tombstoned
+    long[] parentIds = this.parent.knownIds;
+    int parentKnownCount = this.parent.knownCount;
+    for (int i = 0; i < parentKnownCount; ++i) {
+      if (!this.parentDenseHidden(parentIds[i])) count++;
+    }
     Object[] parentBuckets = this.parent.buckets;
     Object[] thisBuckets = this.buckets;
-    int count = 0;
     for (int i = 0; i < parentBuckets.length; ++i) {
       Object parentBucket = parentBuckets[i];
       Object localBucket = thisBuckets[i];
@@ -1288,7 +1321,7 @@ final class OptimizedTagMap implements TagMap {
   @Override
   public boolean isEmpty() {
     // Exact (Map contract). Under read-through resolves the parent; prefer isDefinitelyEmpty().
-    if (this.size != 0) {
+    if (this.size != 0 || this.knownCount != 0) {
       return false;
     }
     OptimizedTagMap p = this.parent;
@@ -1305,13 +1338,16 @@ final class OptimizedTagMap implements TagMap {
 
   @Override
   public boolean isDefinitelyEmpty() {
-    return this.size == 0 && (this.parent == null || this.parent.isDefinitelyEmpty());
+    return this.size == 0
+        && this.knownCount == 0
+        && (this.parent == null || this.parent.isDefinitelyEmpty());
   }
 
   @Override
   public int estimateSize() {
-    // Upper bound: local + parent, ignoring read-through shadowing/removals (over-counts).
-    return this.parent == null ? this.size : this.size + this.parent.estimateSize();
+    // Upper bound: local (buckets + dense) + parent, ignoring shadowing/removals (over-counts).
+    int local = this.size + this.knownCount;
+    return this.parent == null ? local : local + this.parent.estimateSize();
   }
 
   @Deprecated
@@ -1440,8 +1476,15 @@ final class OptimizedTagMap implements TagMap {
     return p.getEntry(tag);
   }
 
-  /** Looks up an entry in this map's own buckets only — no read-through to the parent. */
+  /** Looks up an entry in this map's own storage only (dense then buckets) — no read-through. */
   private Entry getLocalEntry(String tag) {
+    // Known tags live in the dense store; resolve identity and check there first. keyOf is a no-op
+    // (returns 0 -> isStored false) until a resolver is registered, so this is inert in production.
+    long id = KnownTags.keyOf(tag);
+    if (KnownTags.isStored(id)) {
+      Object known = this.knownRawValue(id);
+      return known == null ? null : Entry.newAnyEntry(tag, known);
+    }
     Object[] thisBuckets = this.buckets;
     int hash = TagMap.Entry._hash(tag);
     return findInBucket(thisBuckets[hash & (thisBuckets.length - 1)], hash, tag);
@@ -1471,6 +1514,90 @@ final class OptimizedTagMap implements TagMap {
       return false; // tombstoned: removed locally
     }
     return findInBucket(localBucket, pe.hash(), pe.tag) == null; // not shadowed by a local entry
+  }
+
+  // ---- dense known-tag store (see the knownIds field doc)
+  // ----------------------------------------
+
+  /**
+   * Linear scan of the dense store for {@code tagId}, returning its index or -1. Ids are canonical
+   * (the only way one enters is {@link KnownTags#keyOf} or a {@code KnownTagIds} constant, both
+   * canonical), so a full {@code long} compare is exact and cheaper than extracting globalSerial.
+   */
+  private int knownIndexOf(long tagId) {
+    long[] ids = this.knownIds;
+    int n = this.knownCount;
+    for (int i = 0; i < n; ++i) {
+      if (ids[i] == tagId) return i;
+    }
+    return -1;
+  }
+
+  private void ensureKnownCapacity() {
+    if (this.knownIds == null) {
+      this.knownIds = new long[KNOWN_INIT_CAP];
+      this.knownValues = new Object[KNOWN_INIT_CAP];
+    } else if (this.knownCount == this.knownIds.length) {
+      int newCap = this.knownIds.length << 1;
+      this.knownIds = Arrays.copyOf(this.knownIds, newCap);
+      this.knownValues = Arrays.copyOf(this.knownValues, newCap);
+    }
+  }
+
+  /**
+   * Stores a known tag's value densely (no {@link Entry} alloc). Overwrites in place when present
+   * (returning the prior value materialized as an Entry, per the {@code Map} contract — usually
+   * discarded by {@code set}); otherwise appends, growing x2 as needed.
+   */
+  private Entry putKnownValue(long tagId, Object value) {
+    int i = this.knownIndexOf(tagId);
+    if (i >= 0) {
+      Object prior = this.knownValues[i];
+      this.knownValues[i] = value;
+      return materializeKnown(tagId, prior);
+    }
+    this.ensureKnownCapacity();
+    int slot = this.knownCount++;
+    this.knownIds[slot] = tagId;
+    this.knownValues[slot] = value;
+    return null;
+  }
+
+  /** Raw dense value for {@code tagId}, or {@code null} when absent (no Entry, no boxing). */
+  private Object knownRawValue(long tagId) {
+    int i = this.knownIndexOf(tagId);
+    return i < 0 ? null : this.knownValues[i];
+  }
+
+  /**
+   * Removes a known tag from the dense store (swap-with-last), returning the prior Entry or null.
+   */
+  private Entry removeKnown(long tagId) {
+    int i = this.knownIndexOf(tagId);
+    if (i < 0) return null;
+    Object prior = this.knownValues[i];
+    int last = --this.knownCount;
+    this.knownIds[i] = this.knownIds[last];
+    this.knownValues[i] = this.knownValues[last];
+    this.knownIds[last] = 0L;
+    this.knownValues[last] = null;
+    return materializeKnown(tagId, prior);
+  }
+
+  /** Materializes a transient Entry for a dense (id, value) pair — only on explicit get/iterate. */
+  private static Entry materializeKnown(long tagId, Object value) {
+    return Entry.newAnyEntry(KnownTags.nameOf(tagId), value);
+  }
+
+  /**
+   * Whether a parent dense entry is hidden through this child: shadowed by a local dense entry of
+   * the same id, or tombstoned. (Disjointness means a parent dense entry can't be shadowed by a
+   * local bucket entry — known tags never bucket — so no bucket check is needed here.)
+   */
+  private boolean parentDenseHidden(long tagId) {
+    if (this.knownIndexOf(tagId) >= 0) return true; // shadowed by a local dense entry
+    return this.removedFromParent != null
+        && this.removedFromParent.contains(KnownTags.nameOf(tagId)); // tombstoned
   }
 
   @Deprecated
@@ -1528,6 +1655,14 @@ final class OptimizedTagMap implements TagMap {
     // removal). Gated on the lazy field, so this is a no-op for the common no-tombstone case.
     if (this.removedFromParent != null) {
       this.removedFromParent.remove(newEntry.tag);
+    }
+
+    // Known tag -> dense store, NO Entry retained (the alloc win). keyOf is a no-op until a
+    // resolver
+    // is registered, so this branch is dead and the bucket path below is byte-identical in prod.
+    long id = KnownTags.keyOf(newEntry.tag);
+    if (KnownTags.isStored(id)) {
+      return this.putKnownValue(id, newEntry.objectValue());
     }
 
     Object[] thisBuckets = this.buckets;
@@ -1645,7 +1780,9 @@ final class OptimizedTagMap implements TagMap {
   }
 
   private void putAllOptimizedMap(OptimizedTagMap that) {
-    if (this.size == 0) {
+    // "empty" must consider BOTH local regions — a map with only dense entries has size == 0 but is
+    // not empty, and putAllIntoEmptyMap would clobber its dense store.
+    if (this.size == 0 && this.knownCount == 0) {
       this.putAllIntoEmptyMap(that);
     } else {
       this.putAllMerge(that);
@@ -1764,6 +1901,11 @@ final class OptimizedTagMap implements TagMap {
         }
       }
     }
+
+    // merge the source's dense known-tag entries; incoming clobbers existing (same as buckets)
+    for (int i = 0; i < that.knownCount; ++i) {
+      this.putKnownValue(that.knownIds[i], that.knownValues[i]);
+    }
   }
 
   /*
@@ -1791,6 +1933,13 @@ final class OptimizedTagMap implements TagMap {
       }
     }
     this.size = that.size;
+
+    // clone the dense known-tag store (values are immutable boxes/objects -> safe to share refs)
+    if (that.knownCount > 0) {
+      this.knownIds = Arrays.copyOf(that.knownIds, that.knownIds.length);
+      this.knownValues = Arrays.copyOf(that.knownValues, that.knownValues.length);
+      this.knownCount = that.knownCount;
+    }
   }
 
   public void fillMap(Map<? super String, Object> map) {
@@ -1809,6 +1958,9 @@ final class OptimizedTagMap implements TagMap {
         thisGroup.fillMapFromChain(map);
       }
     }
+    for (int i = 0; i < this.knownCount; ++i) {
+      map.put(KnownTags.nameOf(this.knownIds[i]), this.knownValues[i]);
+    }
   }
 
   public void fillStringMap(Map<? super String, ? super String> stringMap) {
@@ -1826,6 +1978,10 @@ final class OptimizedTagMap implements TagMap {
 
         thisGroup.fillStringMapFromChain(stringMap);
       }
+    }
+    for (int i = 0; i < this.knownCount; ++i) {
+      stringMap.put(
+          KnownTags.nameOf(this.knownIds[i]), TagValueConversions.toString(this.knownValues[i]));
     }
   }
 
@@ -1869,8 +2025,13 @@ final class OptimizedTagMap implements TagMap {
     return localRemoved;
   }
 
-  /** Removes an entry from this map's own buckets only — no parent/tombstone handling. */
+  /** Removes an entry from this map's own storage only — no parent/tombstone handling. */
   private Entry removeLocal(String tag) {
+    long id = KnownTags.keyOf(tag);
+    if (KnownTags.isStored(id)) {
+      return this.removeKnown(id);
+    }
+
     Object[] thisBuckets = this.buckets;
 
     int hash = TagMap.Entry._hash(tag);
@@ -1951,6 +2112,15 @@ final class OptimizedTagMap implements TagMap {
 
   @Override
   public void forEach(Consumer<? super TagMap.EntryReader> consumer) {
+    // local dense known tags via a reused flyweight (no per-entry Entry alloc — the serialize win)
+    if (this.knownCount > 0) {
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < this.knownCount; ++i) {
+        reader.set(KnownTags.nameOf(this.knownIds[i]), this.knownValues[i]);
+        consumer.accept(reader);
+      }
+    }
+
     Object[] thisBuckets = this.buckets;
 
     for (int i = 0; i < thisBuckets.length; ++i) {
@@ -1975,6 +2145,21 @@ final class OptimizedTagMap implements TagMap {
   }
 
   private void forEachParent(Consumer<? super TagMap.EntryReader> consumer) {
+    // parent dense known tags not shadowed by a local dense entry / tombstoned
+    long[] parentIds = this.parent.knownIds;
+    int parentKnownCount = this.parent.knownCount;
+    if (parentKnownCount > 0) {
+      Object[] parentValues = this.parent.knownValues;
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < parentKnownCount; ++i) {
+        long id = parentIds[i];
+        if (!this.parentDenseHidden(id)) {
+          reader.set(KnownTags.nameOf(id), parentValues[i]);
+          consumer.accept(reader);
+        }
+      }
+    }
+
     Object[] localBuckets = this.buckets;
     Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
     for (int i = 0; i < parentBuckets.length; ++i) {
@@ -1996,6 +2181,14 @@ final class OptimizedTagMap implements TagMap {
 
   @Override
   public <T> void forEach(T thisObj, BiConsumer<T, ? super TagMap.EntryReader> consumer) {
+    if (this.knownCount > 0) {
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < this.knownCount; ++i) {
+        reader.set(KnownTags.nameOf(this.knownIds[i]), this.knownValues[i]);
+        consumer.accept(thisObj, reader);
+      }
+    }
+
     Object[] thisBuckets = this.buckets;
 
     for (int i = 0; i < thisBuckets.length; ++i) {
@@ -2019,6 +2212,20 @@ final class OptimizedTagMap implements TagMap {
   }
 
   private <T> void forEachParent(T thisObj, BiConsumer<T, ? super TagMap.EntryReader> consumer) {
+    long[] parentIds = this.parent.knownIds;
+    int parentKnownCount = this.parent.knownCount;
+    if (parentKnownCount > 0) {
+      Object[] parentValues = this.parent.knownValues;
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < parentKnownCount; ++i) {
+        long id = parentIds[i];
+        if (!this.parentDenseHidden(id)) {
+          reader.set(KnownTags.nameOf(id), parentValues[i]);
+          consumer.accept(thisObj, reader);
+        }
+      }
+    }
+
     Object[] localBuckets = this.buckets;
     Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
     for (int i = 0; i < parentBuckets.length; ++i) {
@@ -2043,6 +2250,14 @@ final class OptimizedTagMap implements TagMap {
   @Override
   public <T, U> void forEach(
       T thisObj, U otherObj, TriConsumer<T, U, ? super TagMap.EntryReader> consumer) {
+    if (this.knownCount > 0) {
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < this.knownCount; ++i) {
+        reader.set(KnownTags.nameOf(this.knownIds[i]), this.knownValues[i]);
+        consumer.accept(thisObj, otherObj, reader);
+      }
+    }
+
     Object[] thisBuckets = this.buckets;
 
     for (int i = 0; i < thisBuckets.length; ++i) {
@@ -2067,6 +2282,20 @@ final class OptimizedTagMap implements TagMap {
 
   private <T, U> void forEachParent(
       T thisObj, U otherObj, TriConsumer<T, U, ? super TagMap.EntryReader> consumer) {
+    long[] parentIds = this.parent.knownIds;
+    int parentKnownCount = this.parent.knownCount;
+    if (parentKnownCount > 0) {
+      Object[] parentValues = this.parent.knownValues;
+      EntryReadingHelper reader = new EntryReadingHelper();
+      for (int i = 0; i < parentKnownCount; ++i) {
+        long id = parentIds[i];
+        if (!this.parentDenseHidden(id)) {
+          reader.set(KnownTags.nameOf(id), parentValues[i]);
+          consumer.accept(thisObj, otherObj, reader);
+        }
+      }
+    }
+
     Object[] localBuckets = this.buckets;
     Object[] parentBuckets = this.parent.buckets; // leaf parent: same length, same bucket per key
     for (int i = 0; i < parentBuckets.length; ++i) {
@@ -2093,6 +2322,9 @@ final class OptimizedTagMap implements TagMap {
 
     Arrays.fill(this.buckets, null);
     this.size = 0;
+    this.knownIds = null;
+    this.knownValues = null;
+    this.knownCount = 0;
   }
 
   public OptimizedTagMap freeze() {
@@ -2142,6 +2374,20 @@ final class OptimizedTagMap implements TagMap {
             if (expectedBucket != i) {
               throw new IllegalStateException("incorrect bucket");
             }
+          }
+        }
+      }
+    }
+
+    // dense store: ids must be unique (no tag stored twice) and the count within array bounds.
+    if (this.knownCount > 0) {
+      if (this.knownIds == null || this.knownCount > this.knownIds.length) {
+        throw new IllegalStateException("incorrect known count");
+      }
+      for (int i = 0; i < this.knownCount; ++i) {
+        for (int j = i + 1; j < this.knownCount; ++j) {
+          if (this.knownIds[i] == this.knownIds[j]) {
+            throw new IllegalStateException("duplicate known id");
           }
         }
       }
@@ -2285,6 +2531,10 @@ final class OptimizedTagMap implements TagMap {
     private BucketGroup group = null;
     private int groupIndex = 0;
 
+    // dense-store cursors: local known tags, then (read-through) parent known tags
+    private int knownIndex = 0;
+    private int parentKnownIndex = 0;
+
     IteratorBase(OptimizedTagMap map) {
       this.map = map;
       this.localBuckets = map.buckets;
@@ -2323,6 +2573,12 @@ final class OptimizedTagMap implements TagMap {
     }
 
     private final Entry advance() {
+      // phase: local dense known tags (local entries always emit — no shadow check). Materializes
+      // a transient Entry per slot; the iterator is the rare/compat path (forEach is alloc-free).
+      if (this.knownIndex < this.map.knownCount) {
+        int i = this.knownIndex++;
+        return materializeKnown(this.map.knownIds[i], this.map.knownValues[i]);
+      }
       while (true) {
         Entry tagEntry = this.rawAdvance();
         if (tagEntry != null) {
@@ -2337,8 +2593,14 @@ final class OptimizedTagMap implements TagMap {
           continue; // parent entry shadowed/tombstoned -> skip
         }
 
-        // current array exhausted; switch to the parent's buckets once (read-through union)
+        // current bucket array exhausted; before switching to parent buckets, drain parent dense
+        // (read-through union). Re-entrant: while inParent stays false, the exhausted local-bucket
+        // rawAdvance keeps returning null and funnels back here until parent dense is fully
+        // drained.
         if (!this.inParent && this.map.parent != null) {
+          Entry parentDense = this.advanceParentDense();
+          if (parentDense != null) return parentDense;
+
           this.inParent = true;
           this.buckets = this.map.parent.buckets;
           this.bucketIndex = -1;
@@ -2348,6 +2610,23 @@ final class OptimizedTagMap implements TagMap {
         }
         return null;
       }
+    }
+
+    /**
+     * Next visible parent dense entry (not shadowed locally / tombstoned), or null when drained.
+     */
+    private final Entry advanceParentDense() {
+      OptimizedTagMap p = this.map.parent;
+      long[] parentIds = p.knownIds;
+      int parentKnownCount = p.knownCount;
+      while (this.parentKnownIndex < parentKnownCount) {
+        int i = this.parentKnownIndex++;
+        long id = parentIds[i];
+        if (!this.map.parentDenseHidden(id)) {
+          return materializeKnown(id, p.knownValues[i]);
+        }
+      }
+      return null;
     }
 
     /** Next raw entry in the current bucket array, ignoring shadowing/tombstones. */
