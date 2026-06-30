@@ -101,8 +101,22 @@ public class DenseStoreAllocBenchmark {
     for (int i = 0; i < tagCount; i++) {
       m.set(keys[i], values[i]);
     }
-    // models the read/serialize path: forEach is the alloc-free flyweight emit for dense
+    // forEach: the alloc-free flyweight emit for dense
     m.forEach(reader -> bh.consume(reader.objectValue()));
+    bh.consume(m);
+  }
+
+  @Benchmark
+  public void buildAndSerializeViaIterator(Blackhole bh) {
+    TagMap m = TagMap.create(16);
+    for (int i = 0; i < tagCount; i++) {
+      m.set(keys[i], values[i]);
+    }
+    // models the REAL serializer's count pre-pass (TraceMapperV0_4:95): the EntryReader iterator
+    // materializes an Entry per dense tag -> should erase the dense alloc win.
+    for (TagMap.EntryReader reader : m) {
+      bh.consume(reader.objectValue());
+    }
     bh.consume(m);
   }
 }

@@ -2592,7 +2592,13 @@ final class OptimizedTagMap implements TagMap {
     private Object[] buckets;
     private boolean inParent = false;
 
-    private Entry nextEntry;
+    // Currency is EntryReader, not Entry: a BUCKET entry is its own (real, retain-safe) Entry, but
+    // a
+    // DENSE entry is emitted via the reused denseReader flyweight (alloc-free, "use now"). This is
+    // the contract of TagMap.iterator()/keySet()/values(). entrySet() (Iterator<Map.Entry>) sits on
+    // top and calls .entry() per next() to get a real retain-safe Entry (see EntriesIterator).
+    private EntryReader nextEntry;
+    private EntryReadingHelper denseReader; // lazily created on the first dense emit
 
     private int bucketIndex = -1;
 
@@ -2616,9 +2622,9 @@ final class OptimizedTagMap implements TagMap {
       return this.nextEntry != null;
     }
 
-    final Entry nextEntryOrThrowNoSuchElement() {
+    final EntryReader nextEntryOrThrowNoSuchElement() {
       if (this.nextEntry != null) {
-        Entry nextEntry = this.nextEntry;
+        EntryReader nextEntry = this.nextEntry;
         this.nextEntry = null;
         return nextEntry;
       }
@@ -2630,9 +2636,9 @@ final class OptimizedTagMap implements TagMap {
       }
     }
 
-    final Entry nextEntryOrNull() {
+    final EntryReader nextEntryOrNull() {
       if (this.nextEntry != null) {
-        Entry nextEntry = this.nextEntry;
+        EntryReader nextEntry = this.nextEntry;
         this.nextEntry = null;
         return nextEntry;
       }
@@ -2640,12 +2646,13 @@ final class OptimizedTagMap implements TagMap {
       return this.hasNext() ? this.nextEntry : null;
     }
 
-    private final Entry advance() {
-      // phase: local dense known tags (local entries always emit — no shadow check). Materializes
-      // a transient Entry per slot; the iterator is the rare/compat path (forEach is alloc-free).
+    private final EntryReader advance() {
+      // phase: local dense known tags (local entries always emit — no shadow check). Emitted via
+      // the
+      // reused denseReader flyweight — NO per-entry Entry alloc (the read/serialize alloc win).
       if (this.knownIndex < this.map.knownCount) {
         int i = this.knownIndex++;
-        return materializeKnown(this.map.knownIds[i], this.map.knownValues[i]);
+        return this.emitDense(this.map.knownIds[i], this.map.knownValues[i]);
       }
       while (true) {
         Entry tagEntry = this.rawAdvance();
@@ -2666,7 +2673,7 @@ final class OptimizedTagMap implements TagMap {
         // rawAdvance keeps returning null and funnels back here until parent dense is fully
         // drained.
         if (!this.inParent && this.map.parent != null) {
-          Entry parentDense = this.advanceParentDense();
+          EntryReader parentDense = this.advanceParentDense();
           if (parentDense != null) return parentDense;
 
           this.inParent = true;
@@ -2683,7 +2690,7 @@ final class OptimizedTagMap implements TagMap {
     /**
      * Next visible parent dense entry (not shadowed locally / tombstoned), or null when drained.
      */
-    private final Entry advanceParentDense() {
+    private final EntryReader advanceParentDense() {
       OptimizedTagMap p = this.map.parent;
       long[] parentIds = p.knownIds;
       int parentKnownCount = p.knownCount;
@@ -2691,10 +2698,20 @@ final class OptimizedTagMap implements TagMap {
         int i = this.parentKnownIndex++;
         long id = parentIds[i];
         if (!this.map.parentDenseHidden(id)) {
-          return materializeKnown(id, p.knownValues[i]);
+          return this.emitDense(id, p.knownValues[i]);
         }
       }
       return null;
+    }
+
+    /** Sets and returns the reused dense flyweight (lazily created); "use now", do not retain. */
+    private EntryReader emitDense(long tagId, Object value) {
+      EntryReadingHelper reader = this.denseReader;
+      if (reader == null) {
+        reader = this.denseReader = new EntryReadingHelper();
+      }
+      reader.set(KnownTags.nameOf(tagId), value);
+      return reader;
     }
 
     /** Next raw entry in the current bucket array, ignoring shadowing/tombstones. */
@@ -3226,9 +3243,26 @@ final class OptimizedTagMap implements TagMap {
 
     @Override
     public Iterator<Map.Entry<String, Object>> iterator() {
-      @SuppressWarnings({"rawtypes", "unchecked"})
-      Iterator<Map.Entry<String, Object>> iter = (Iterator) this.map.iterator();
-      return iter;
+      return new EntriesIterator(this.map);
+    }
+  }
+
+  /**
+   * entrySet() yields real, retain-safe {@code Map.Entry} objects. It sits on top of the
+   * EntryReader iterator and materializes each via {@code .entry()}: a bucket entry's reader IS the
+   * real stored Entry (returns {@code this}, free); a dense entry's flyweight materializes a fresh
+   * Entry. Deliberately NOT alloc-optimized for dense — bulk reads use {@code forEach}/EntryReader,
+   * and manual instrumentation does point get/set, not bulk entrySet iteration.
+   */
+  static final class EntriesIterator extends IteratorBase
+      implements Iterator<Map.Entry<String, Object>> {
+    EntriesIterator(OptimizedTagMap map) {
+      super(map);
+    }
+
+    @Override
+    public Map.Entry<String, Object> next() {
+      return this.nextEntryOrThrowNoSuchElement().entry();
     }
   }
 
