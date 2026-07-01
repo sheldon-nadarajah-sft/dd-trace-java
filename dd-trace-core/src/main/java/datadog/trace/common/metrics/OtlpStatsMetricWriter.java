@@ -8,6 +8,8 @@ import static datadog.trace.core.otlp.common.OtlpCommonProto.LEN_WIRE_TYPE;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeAttribute;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeI64;
 import static datadog.trace.core.otlp.common.OtlpCommonProto.writeTag;
+import static datadog.trace.core.otlp.common.OtlpResourceProto.RESOURCE_MESSAGE;
+import static datadog.trace.core.otlp.common.OtlpResourceProto.RESOURCE_MESSAGE_WITH_DATADOG_ATTRS;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordDataPointMessage;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordMetricMessage;
 import static datadog.trace.core.otlp.metrics.OtlpMetricsProto.recordScopedMetricsMessage;
@@ -115,9 +117,7 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
     this.otelSemanticsMode = otelSemanticsMode;
     this.defaultService = defaultService;
     this.resourceMessage =
-        otelSemanticsMode
-            ? OtlpResourceProto.RESOURCE_MESSAGE
-            : OtlpResourceProto.RESOURCE_MESSAGE_WITH_DATADOG_ATTRS;
+        otelSemanticsMode ? RESOURCE_MESSAGE : RESOURCE_MESSAGE_WITH_DATADOG_ATTRS;
   }
 
   @Nullable
