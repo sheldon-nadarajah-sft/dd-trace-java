@@ -373,7 +373,7 @@ public final class ClientStatsAggregator implements MetricsAggregator, EventList
       Object httpMethodObj = span.unsafeGetTag(HTTP_METHOD);
       httpMethod = httpMethodObj != null ? httpMethodObj.toString() : null;
       Object httpEndpointObj = span.unsafeGetTag(HTTP_ENDPOINT);
-      // OTLP path falls back to http.route (mirrors libdatadog). The native v0.6 path keeps its
+      // OTLP path falls back to http.route. The native v0.6 path keeps its
       // http.endpoint-only lookup so this doesn't change its aggregation key / wire output.
       if (otlpStatsExportEnabled && httpEndpointObj == null) {
         httpEndpointObj = span.unsafeGetTag(HTTP_ROUTE);

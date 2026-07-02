@@ -320,7 +320,7 @@ class OtlpStatsMetricWriterTest {
   private static DecodedMetric writeAndDecode(boolean otelSemanticsMode, AggregateEntry entry)
       throws IOException {
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, otelSemanticsMode);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, otelSemanticsMode, null);
     writer.startBucket(1, BUCKET_START, BUCKET_DURATION);
     writer.add(entry);
     writer.finishBucket();
@@ -378,7 +378,7 @@ class OtlpStatsMetricWriterTest {
   @Test
   void errorSeriesDoesNotLingerAfterClearWhenBucketHasOnlyOkHits() throws IOException {
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, null);
 
     // Bucket 1: the entry sees an error, so its error histogram is allocated and emits a point.
     AggregateEntry e = entry("GET /users", false, 0, null, null, null);
@@ -436,8 +436,6 @@ class OtlpStatsMetricWriterTest {
   @Test
   void serviceNameEmittedOnlyForNonDefaultService() throws IOException {
     CapturingSender sender = new CapturingSender();
-    // The configured default service ("web") is reported on the resource; only a span whose service
-    // differs from it repeats service.name on its own data point.
     OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, "web");
 
     long start = SECONDS.toNanos(1_700_000_000L);
@@ -494,12 +492,8 @@ class OtlpStatsMetricWriterTest {
 
   @Test
   void grpcStatusExtractedFromGrpcTypedSpanOnOtlpPath() throws Exception {
-    // Drives the real ConflatingMetricsAggregator on the OTLP path (otlpStatsExportEnabled is true
-    // because the writer is an OtlpStatsMetricWriter): a span typed "grpc" carrying the
-    // grpc.status.code tag must surface rpc.response.status_code, even though that key + span type
-    // are outside the native v0.6 path's single-key + "rpc"-type lookup.
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, null);
 
     DDAgentFeaturesDiscovery features = mock(DDAgentFeaturesDiscovery.class);
     when(features.peerTags()).thenReturn(Collections.<String>emptySet());
@@ -556,7 +550,7 @@ class OtlpStatsMetricWriterTest {
   @Test
   void emptyBucketSendsNothing() {
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, null);
 
     writer.startBucket(0, BUCKET_START, BUCKET_DURATION);
     writer.finishBucket(); // no add()
@@ -568,7 +562,7 @@ class OtlpStatsMetricWriterTest {
   @Test
   void nullSenderDoesNotThrowOnNonEmptyBucket() {
     // mirrors the HTTP_JSON path where createSender(config) returns null.
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(null, false);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(null, false, null);
     writer.startBucket(1, BUCKET_START, BUCKET_DURATION);
     writer.add(okEntry(SECONDS.toNanos(1), 2));
     try {

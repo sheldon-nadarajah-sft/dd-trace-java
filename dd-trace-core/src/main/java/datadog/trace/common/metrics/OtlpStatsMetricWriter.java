@@ -75,19 +75,9 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   @Nullable private final OtlpSender sender;
   private final boolean otelSemanticsMode;
 
-  /**
-   * The configured default service, reported once on the resource. A data point only carries its
-   * own {@code service.name} attribute when its span's service differs from this; for the default
-   * service the point inherits the resource value (most-specific-wins at the consumer). {@code
-   * null} disables the per-point comparison (test constructors).
-   */
+  // service name from Resource Attributes
   @Nullable private final String defaultService;
 
-  /**
-   * Resource attribute blob prepended to every payload. In default mode it carries the {@code
-   * datadog.runtime_id} and process-tag resource attributes; in OTel-semantics mode it is the plain
-   * vendor-neutral resource (no {@code datadog.*}).
-   */
   private final byte[] resourceMessage;
 
   // Need a temporary buffer to know what size to write for the final protobuf buffer
@@ -106,11 +96,7 @@ public final class OtlpStatsMetricWriter implements MetricWriter {
   }
 
   // visible for testing: lets tests inject a capturing sender to decode the emitted protobuf and
-  // control the semantics mode
-  OtlpStatsMetricWriter(@Nullable OtlpSender sender, boolean otelSemanticsMode) {
-    this(sender, otelSemanticsMode, null);
-  }
-
+  // control the semantics mode and default service
   OtlpStatsMetricWriter(
       @Nullable OtlpSender sender, boolean otelSemanticsMode, @Nullable String defaultService) {
     this.sender = sender;
