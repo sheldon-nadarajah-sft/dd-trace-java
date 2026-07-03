@@ -127,6 +127,35 @@ class GradleDaemonSmokeTest extends AbstractGradleTest {
         expectedCoverages);
   }
 
+  @TableTest({
+    "scenario           | gradleVersion | projectName              | expectedTraces",
+    "robolectric-latest | latest        | test-succeed-robolectric | 6             "
+  })
+  @ParameterizedTest
+  void testRobolectric(String gradleVersion, String projectName, int expectedTraces)
+      throws IOException {
+    // Robolectric 4.16 requires JDK 17+ for its sandbox.
+    Assumptions.assumeTrue(
+        JavaVirtualMachine.isJavaVersionAtLeast(17), "Robolectric requires JDK 17 or higher");
+
+    gradleVersion = resolveVersion(gradleVersion);
+    givenGradleVersionIsCompatibleWithCurrentJvm(gradleVersion);
+    givenGradleVersionIsSupportedByCurrentGradleTestKit(gradleVersion);
+    givenGradleProjectFiles(projectName);
+    givenGradleProjectProperties();
+    ensureDependenciesDownloaded(gradleVersion);
+
+    BuildResult buildResult = runGradleTests(gradleVersion, true, false);
+    assertBuildSuccessful(buildResult);
+
+    verifyEventsAndCoverages(
+        projectName,
+        "gradle",
+        gradleVersion,
+        mockBackend.waitForEvents(expectedTraces),
+        mockBackend.waitForCoverages(0));
+  }
+
   // TODO: add back LATEST_GRADLE_VERSION after fixing ordering on Gradle 9.3.0
   @TableTest({
     "scenario              | gradleVersion | projectName                         | flakyTests                                                                                                                                | expectedOrder                                                                                                                                                                                                                                                                              | eventsNumber",
