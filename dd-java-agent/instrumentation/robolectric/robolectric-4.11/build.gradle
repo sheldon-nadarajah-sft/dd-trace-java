@@ -1,0 +1,14 @@
+muzzle {
+  pass {
+    group = 'org.robolectric'
+    module = 'robolectric'
+    versions = '[4.11,)'
+  }
+}
+
+apply from: "$rootDir/gradle/java.gradle"
+
+dependencies {
+  // instrumentation is validated through a scenario in `GradleDaemonSmokeTest`
+  compileOnly group: 'org.robolectric', name: 'robolectric', version: '4.16.1'
+}
