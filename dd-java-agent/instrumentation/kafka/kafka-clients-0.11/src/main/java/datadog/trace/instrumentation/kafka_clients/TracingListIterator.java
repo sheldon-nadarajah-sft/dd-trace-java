@@ -1,7 +1,7 @@
 package datadog.trace.instrumentation.kafka_clients;
 
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.closePrevious;
-import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getRootContext;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.rootContext;
 import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 
 import datadog.trace.api.InstrumenterConfig;
@@ -33,7 +33,7 @@ public class TracingListIterator extends TracingIterator
       if (InstrumenterConfig.get().isLegacyContextManagerEnabled()) {
         closePrevious(true);
       } else {
-        final AgentSpan previousSpan = spanFromContext(getRootContext().swap());
+        final AgentSpan previousSpan = spanFromContext(rootContext().swap());
         if (previousSpan != null) {
           previousSpan.finishWithEndToEnd();
         }

@@ -7,7 +7,7 @@ import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extra
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateNext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.closePrevious;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
-import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getRootContext;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.rootContext;
 import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.bootstrap.instrumentation.api.URIUtils.urlFileName;
 import static datadog.trace.instrumentation.aws.v2.sqs.MessageExtractAdapter.GETTER;
@@ -52,7 +52,7 @@ public class TracingIterator<L extends Iterator<Message>> implements Iterator<Me
       if (InstrumenterConfig.get().isLegacyContextManagerEnabled()) {
         closePrevious(true);
       } else {
-        final AgentSpan previousSpan = spanFromContext(getRootContext().swap());
+        final AgentSpan previousSpan = spanFromContext(rootContext().swap());
         if (previousSpan != null) {
           previousSpan.finishWithEndToEnd();
         }
@@ -73,7 +73,7 @@ public class TracingIterator<L extends Iterator<Message>> implements Iterator<Me
       if (InstrumenterConfig.get().isLegacyContextManagerEnabled()) {
         closePrevious(true);
       } else if (message == null) { // previous message span was the last
-        final AgentSpan previousSpan = spanFromContext(getRootContext().swap());
+        final AgentSpan previousSpan = spanFromContext(rootContext().swap());
         if (previousSpan != null) {
           previousSpan.finishWithEndToEnd();
         }

@@ -1,7 +1,7 @@
 package datadog.trace.instrumentation.aws.v1.sqs;
 
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.closePrevious;
-import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getRootContext;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.rootContext;
 import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 
 import com.amazonaws.services.sqs.model.Message;
@@ -24,7 +24,7 @@ public class TracingListIterator extends TracingIterator<ListIterator<Message>>
       if (InstrumenterConfig.get().isLegacyContextManagerEnabled()) {
         closePrevious(true);
       } else {
-        final AgentSpan previousSpan = spanFromContext(getRootContext().swap());
+        final AgentSpan previousSpan = spanFromContext(rootContext().swap());
         if (previousSpan != null) {
           previousSpan.finishWithEndToEnd();
         }
