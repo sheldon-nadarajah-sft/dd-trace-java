@@ -1,6 +1,7 @@
 package datadog.trace.instrumentation.springmessaging;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.currentContext;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 
 import com.google.auto.service.AutoService;
@@ -59,7 +60,7 @@ public class KotlinAwareHandlerInstrumentation extends InstrumenterModule.Tracin
     public static void onExit(@Advice.Return Object result) {
       if (result instanceof Publisher) {
         InstrumentationContext.get(Publisher.class, Context.class)
-            .put((Publisher<?>) result, Context.current());
+            .put((Publisher<?>) result, currentContext());
       }
     }
   }
