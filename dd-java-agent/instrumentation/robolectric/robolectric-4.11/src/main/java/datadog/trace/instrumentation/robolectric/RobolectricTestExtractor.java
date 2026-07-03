@@ -15,9 +15,6 @@ import org.robolectric.versioning.AndroidVersions;
 /**
  * Reads the emulated Android SDK and Robolectric version (once the sandbox has established the SDK)
  * and hands them to the CI Visibility core via {@link AndroidTestContext}.
- *
- * <p>Injected as a helper into the classloader that runs Robolectric's test environment, so it can
- * reference {@code org.robolectric} types directly (no reflection).
  */
 public final class RobolectricTestExtractor {
 

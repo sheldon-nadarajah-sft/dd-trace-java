@@ -85,6 +85,13 @@ public class Tags {
   public static final String TEST_BROWSER_NAME = "test.browser.name";
   public static final String TEST_BROWSER_VERSION = "test.browser.version";
   public static final String TEST_CALLBACK = "test.callback";
+  // Emulated Android SDK metadata. Robolectric runs tests on the host JVM against an emulated SDK,
+  // so the host os.*/runtime.* tags do not describe it. The SDK tags are per-test, since
+  // @Config(sdk=...) can vary per method.
+  public static final String TEST_ANDROID_API_LEVEL = "test.android.api_level";
+  public static final String TEST_ANDROID_RELEASE = "test.android.release";
+  public static final String TEST_ANDROID_CODENAME = "test.android.codename";
+  public static final String TEST_ANDROID_ROBOLECTRIC_VERSION = "test.android.robolectric.version";
 
   public static final String TEST_SESSION_ID = "test_session_id";
   public static final String TEST_MODULE_ID = "test_module_id";
