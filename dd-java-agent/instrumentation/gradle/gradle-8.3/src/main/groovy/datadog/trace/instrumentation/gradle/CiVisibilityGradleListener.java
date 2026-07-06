@@ -183,6 +183,11 @@ public class CiVisibilityGradleListener extends BuildAdapter
     Project project = gradle.getRootProject().project(projectPath);
     Test task = (Test) project.getTasks().getByName(taskIdentity.name);
 
+    // "com.android.base" is applied transitively by every Android Gradle Plugin
+    // (application/library/dynamic-feature/test), so it is a reliable single marker for an
+    // Android project regardless of how its tests are executed.
+    boolean isAndroid = project.getPluginManager().hasPlugin("com.android.base");
+
     Map<String, Object> inputProperties = task.getInputs().getProperties();
     BuildModuleLayout moduleLayout =
         (BuildModuleLayout) inputProperties.get(CiVisibilityPluginExtension.MODULE_LAYOUT_PROPERTY);
@@ -197,7 +202,7 @@ public class CiVisibilityGradleListener extends BuildAdapter
     List<Path> taskClasspath = CiVisibilityPluginExtension.getClasspath(task);
 
     ciVisibilityService.onModuleStart(
-        taskPath, moduleLayout, jvmExecutable, taskClasspath, jacocoAgent);
+        taskPath, isAndroid, moduleLayout, jvmExecutable, taskClasspath, jacocoAgent);
   }
 
   private JavaAgent getJacocoAgent(Test task) {
