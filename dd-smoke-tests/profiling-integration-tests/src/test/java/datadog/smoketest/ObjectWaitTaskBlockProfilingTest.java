@@ -1,10 +1,6 @@
 package datadog.smoketest;
 
 import static datadog.smoketest.SmokeTestUtils.checkProcessSuccessfullyEnd;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.BLOCKER;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.LOCAL_ROOT_SPAN_ID;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.OPERATION;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.SPAN_ID;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -15,12 +11,10 @@ import io.opentracing.Span;
 import io.opentracing.Tracer;
 import io.opentracing.util.GlobalTracer;
 import java.io.IOException;
-import java.nio.file.Path;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -35,27 +29,12 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
  * MonitorWait}/{@code MonitorWaited} callbacks.
  */
 @DisabledOnJ9
-final class ObjectWaitTaskBlockProfilingTest {
+final class ObjectWaitTaskBlockProfilingTest
+    extends TaskBlockProfilingTestBase<ObjectWaitTaskBlockProfilingTest.JfrStats> {
   private static final IAttribute<IQuantity> UNBLOCKING_SPAN_ID =
       attr("unblockingSpanId", "unblockingSpanId", "unblockingSpanId", NUMBER);
   private static final IAttribute<IQuantity> TASK_BLOCK_EMITTED =
       attr("numTaskBlockEmitted", "numTaskBlockEmitted", "numTaskBlockEmitted", NUMBER);
-
-  private Path dumpDir;
-  private Path logFilePath;
-
-  @BeforeEach
-  void setup(TestInfo testInfo) throws IOException {
-    logFilePath =
-        TaskBlockProfilingTestSupport.buildLogFilePath(
-            ObjectWaitTaskBlockProfilingTest.class, testInfo, "objectWait");
-    dumpDir = TaskBlockProfilingTestSupport.createDumpDir("dd-profiler-objectwait-");
-  }
-
-  @AfterEach
-  void tearDown() throws IOException {
-    TaskBlockProfilingTestSupport.deleteRecursively(dumpDir);
-  }
 
   @Test
   @DisplayName("Object.wait emits span-attributed native TaskBlock events")
@@ -88,27 +67,40 @@ final class ObjectWaitTaskBlockProfilingTest {
     assertFalse(logHasObjectWaitInstrumentationError(), "Object.wait instrumentation failed");
   }
 
-  private ProcessBuilder createProcessBuilder() throws IOException {
-    return TaskBlockProfilingTestSupport.createTaskBlockProcessBuilder(
-        "smoke-test-objectwait-taskblock",
-        ObjectWaitTaskBlockForkedApp.class.getName(),
-        dumpDir,
-        logFilePath);
+  @Override
+  protected String tempDirPrefix() {
+    return "dd-profiler-objectwait-";
   }
 
-  private JfrStats loadStats() throws Exception {
-    JfrStats stats = new JfrStats();
-    for (IItemCollection events : TaskBlockProfilingTestSupport.loadDumpedEvents(dumpDir)) {
-      stats.add(events);
-    }
-    return stats;
+  @Override
+  protected String defaultLogName() {
+    return "objectWait";
+  }
+
+  @Override
+  protected String serviceName() {
+    return "smoke-test-objectwait-taskblock";
+  }
+
+  @Override
+  protected Class<?> forkedAppClass() {
+    return ObjectWaitTaskBlockForkedApp.class;
+  }
+
+  @Override
+  protected JfrStats newStats() {
+    return new JfrStats();
+  }
+
+  @Override
+  protected void addEvents(JfrStats stats, IItemCollection events) {
+    stats.add(events);
   }
 
   private boolean logHasObjectWaitInstrumentationError() throws IOException {
-    return TaskBlockProfilingTestSupport.logContainsAny(
-        logFilePath,
-        "NoClassDefFoundError",
-        "Failed to handle exception in instrumentation for java.lang.Object");
+    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
+    return log.contains("NoClassDefFoundError")
+        || log.contains("Failed to handle exception in instrumentation for java.lang.Object");
   }
 
   public static final class ObjectWaitTaskBlockForkedApp {
@@ -169,7 +161,7 @@ final class ObjectWaitTaskBlockProfilingTest {
     }
   }
 
-  private static final class JfrStats {
+  static final class JfrStats {
     private long taskBlockCount;
     private long taskBlockEmitted;
     private long taskBlocksWithNonZeroBlocker;

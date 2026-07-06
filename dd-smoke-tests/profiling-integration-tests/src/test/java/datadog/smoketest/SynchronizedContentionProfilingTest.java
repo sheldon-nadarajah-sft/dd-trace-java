@@ -1,22 +1,16 @@
 package datadog.smoketest;
 
 import static datadog.smoketest.SmokeTestUtils.checkProcessSuccessfullyEnd;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.BLOCKER;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.LOCAL_ROOT_SPAN_ID;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.OPERATION;
-import static datadog.smoketest.TaskBlockProfilingTestSupport.SPAN_ID;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.HashSet;
 import java.util.Set;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -32,22 +26,8 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
  * MonitorContendedEnter}/{@code MonitorContendedEntered} path.
  */
 @DisabledOnJ9
-final class SynchronizedContentionProfilingTest {
-  private Path dumpDir;
-  private Path logFilePath;
-
-  @BeforeEach
-  void setup(TestInfo testInfo) throws IOException {
-    logFilePath =
-        TaskBlockProfilingTestSupport.buildLogFilePath(
-            SynchronizedContentionProfilingTest.class, testInfo, "syncContention");
-    dumpDir = TaskBlockProfilingTestSupport.createDumpDir("dd-profiler-synccontention-");
-  }
-
-  @AfterEach
-  void tearDown() throws IOException {
-    TaskBlockProfilingTestSupport.deleteRecursively(dumpDir);
-  }
+final class SynchronizedContentionProfilingTest
+    extends TaskBlockProfilingTestBase<SynchronizedContentionProfilingTest.JfrStats> {
 
   @Test
   @DisplayName(
@@ -89,33 +69,46 @@ final class SynchronizedContentionProfilingTest {
         "native synchronized-contention TaskBlock path must not produce errors");
   }
 
-  private ProcessBuilder createProcessBuilder() throws IOException {
-    return TaskBlockProfilingTestSupport.createTaskBlockProcessBuilder(
-        "smoke-test-synccontention-taskblock",
-        com.datadog.smoketest.profiling.SynchronizedContentionForkedApp.class.getName(),
-        dumpDir,
-        logFilePath);
+  @Override
+  protected String tempDirPrefix() {
+    return "dd-profiler-synccontention-";
   }
 
-  private JfrStats loadStats() throws Exception {
-    JfrStats stats = new JfrStats();
-    for (IItemCollection events : TaskBlockProfilingTestSupport.loadDumpedEvents(dumpDir)) {
-      stats.add(events);
-    }
-    return stats;
+  @Override
+  protected String defaultLogName() {
+    return "syncContention";
+  }
+
+  @Override
+  protected String serviceName() {
+    return "smoke-test-synccontention-taskblock";
+  }
+
+  @Override
+  protected Class<?> forkedAppClass() {
+    return com.datadog.smoketest.profiling.SynchronizedContentionForkedApp.class;
+  }
+
+  @Override
+  protected JfrStats newStats() {
+    return new JfrStats();
+  }
+
+  @Override
+  protected void addEvents(JfrStats stats, IItemCollection events) {
+    stats.add(events);
   }
 
   private boolean logHasSynchronizedContentionError() throws IOException {
-    return TaskBlockProfilingTestSupport.logContainsAny(
-        logFilePath,
-        "NoClassDefFoundError",
-        "Failed to handle exception in instrumentation",
-        "VerifyError");
+    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
+    return log.contains("NoClassDefFoundError")
+        || log.contains("Failed to handle exception in instrumentation")
+        || log.contains("VerifyError");
   }
 
   // ------------------------------------------------------------------ stats
 
-  private static final class JfrStats {
+  static final class JfrStats {
     long blockScenarioCount;
     long instanceMethodScenarioCount;
     long staticMethodScenarioCount;

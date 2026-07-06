@@ -18,7 +18,7 @@ final class ProfilerContexts {
     if (span == null) {
       return null;
     }
-    AgentSpanContext context = span.context();
+    AgentSpanContext context = span.spanContext();
     return context instanceof ProfilerContext ? (ProfilerContext) context : null;
   }
 }
