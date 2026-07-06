@@ -134,9 +134,9 @@ class GradleDaemonSmokeTest extends AbstractGradleTest {
   @ParameterizedTest
   void testRobolectric(String gradleVersion, String projectName, int expectedTraces)
       throws IOException {
-    // Robolectric 4.16 requires JDK 17+ for its sandbox.
+    // Robolectric 4.16's sandbox supports JDK 17-21
     Assumptions.assumeTrue(
-        JavaVirtualMachine.isJavaVersionAtLeast(17), "Robolectric requires JDK 17 or higher");
+        JavaVirtualMachine.isJavaVersionBetween(17, 22), "Robolectric 4.16 supports JDK 17-21");
 
     gradleVersion = resolveVersion(gradleVersion);
     givenGradleVersionIsCompatibleWithCurrentJvm(gradleVersion);
