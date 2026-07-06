@@ -693,7 +693,7 @@ muzzle:
   needs: &needs_build_tests_inst
     - job: build_java_profiler_ddprof
       optional: true
-    - build_tests
+    - job: build_tests
       parallel:
         matrix:
           - GRADLE_TARGET: ":instrumentationTest"

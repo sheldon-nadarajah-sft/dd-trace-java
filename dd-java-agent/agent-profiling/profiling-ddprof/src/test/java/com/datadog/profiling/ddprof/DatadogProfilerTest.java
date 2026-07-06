@@ -151,6 +151,42 @@ class DatadogProfilerTest {
     }
   }
 
+  @ParameterizedTest
+  @MethodSource("wallPrecheckModes")
+  void testWallPrecheck(boolean wallPrecheckEnabled) throws Exception {
+    try {
+      Throwable reason = DdprofLibraryLoader.jvmAccess().getReasonNotLoaded();
+      if (reason != null) {
+        Assumptions.assumeTrue(false, "Profiler not available: " + reason.getMessage());
+      }
+    } catch (Throwable e) {
+      Assumptions.assumeTrue(false, "Profiler not available: " + e.getMessage());
+    }
+
+    Properties props = new Properties();
+    props.put(ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_ENABLED, "true");
+    props.put(
+        ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_PRECHECK,
+        Boolean.toString(wallPrecheckEnabled));
+
+    DatadogProfiler profiler =
+        DatadogProfiler.newInstance(ConfigProvider.withPropertiesOverride(props));
+
+    Path targetFile = Paths.get("/tmp/target.jfr");
+    String cmd = profiler.cmdStartProfiling(targetFile);
+
+    assertTrue(cmd.contains("wall="), cmd);
+    if (wallPrecheckEnabled) {
+      assertTrue(cmd.contains(",wallprecheck=true"), cmd);
+    } else {
+      assertFalse(cmd.contains("wallprecheck="), cmd);
+    }
+  }
+
+  private static Stream<Arguments> wallPrecheckModes() {
+    return Stream.of(Arguments.of(true), Arguments.of(false));
+  }
+
   private static Stream<Arguments> wallContextFilterModes() {
     return Stream.of(
         Arguments.of(true, true), // tracing enabled, context filter enabled -> filter=0

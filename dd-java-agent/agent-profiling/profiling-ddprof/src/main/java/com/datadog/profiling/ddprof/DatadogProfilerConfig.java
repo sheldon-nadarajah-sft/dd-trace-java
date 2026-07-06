@@ -43,8 +43,6 @@ import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILE
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_INTERVAL;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_INTERVAL_DEFAULT;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_PRECHECK;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_PRECHECK_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_TRACK_GENERATIONS;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_TRACK_GENERATIONS_DEFAULT;
@@ -58,6 +56,7 @@ import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_ENABLED;
 import com.datadog.profiling.controller.ProfilingSupport;
 import datadog.environment.JavaVirtualMachine;
 import datadog.trace.api.config.ProfilingConfig;
+import datadog.trace.api.profiling.TaskBlockInstrumentationConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import java.lang.management.ManagementFactory;
 import java.util.Collections;
@@ -170,10 +169,7 @@ public class DatadogProfilerConfig {
   }
 
   public static boolean getWallPrecheck(ConfigProvider configProvider) {
-    return getBoolean(
-        configProvider,
-        PROFILING_DATADOG_PROFILER_WALL_PRECHECK,
-        PROFILING_DATADOG_PROFILER_WALL_PRECHECK_DEFAULT);
+    return TaskBlockInstrumentationConfig.isWallPrecheckEnabled(configProvider);
   }
 
   static boolean isJmethodIDSafe() {

@@ -144,13 +144,25 @@ public final class DdprofLibraryLoader {
     return new JavaProfilerHolder(profiler, reasonNotLoaded);
   }
 
+  static Method resolveWallPrecheckGetInstance(Class<?> profilerClass) {
+    try {
+      return profilerClass.getMethod(
+          "getInstance", String.class, String.class, boolean.class, boolean.class);
+    } catch (NoSuchMethodException e) {
+      return null;
+    }
+  }
+
   private static JavaProfiler createJavaProfiler(
       String libPath, String scratch, boolean delegateMonitorEvents, boolean wallPrecheck)
       throws Exception {
+    Method getInstance = resolveWallPrecheckGetInstance(JavaProfiler.class);
+    if (getInstance == null) {
+      // Older ddprof artifacts do not support the explicit wallprecheck init flag. Keep the agent
+      // buildable and fall back to the legacy constructor.
+      return JavaProfiler.getInstance(libPath, scratch);
+    }
     try {
-      Method getInstance =
-          JavaProfiler.class.getMethod(
-              "getInstance", String.class, String.class, boolean.class, boolean.class);
       return (JavaProfiler)
           getInstance.invoke(null, libPath, scratch, delegateMonitorEvents, wallPrecheck);
     } catch (InvocationTargetException e) {
@@ -162,10 +174,6 @@ public final class DdprofLibraryLoader {
         throw (Exception) cause;
       }
       throw e;
-    } catch (NoSuchMethodException ignored) {
-      // Older ddprof artifacts do not support the explicit wallprecheck init flag. Keep the agent
-      // buildable and fall back to the legacy constructor.
-      return JavaProfiler.getInstance(libPath, scratch);
     }
   }
 
