@@ -1,7 +1,10 @@
 package datadog.trace.instrumentation.robolectric;
 
-import datadog.trace.api.civisibility.android.AndroidTestContext;
-import datadog.trace.api.civisibility.android.AndroidTestInfo;
+import datadog.trace.api.gateway.RequestContext;
+import datadog.trace.api.gateway.RequestContextSlot;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
+import datadog.trace.bootstrap.instrumentation.api.Tags;
 import java.io.File;
 import java.net.URL;
 import java.security.CodeSource;
@@ -12,30 +15,40 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.versioning.AndroidVersions;
 
-/**
- * Reads the emulated Android SDK and Robolectric version (once the sandbox has established the SDK)
- * and hands them to the CI Visibility core via {@link AndroidTestContext}.
- */
-public final class RobolectricTestExtractor {
+public final class RobolectricTestAnnotator {
 
   /** Matches the version in a {@code robolectric-<version>.jar} file name. */
   private static final Pattern ROBOLECTRIC_JAR = Pattern.compile("^robolectric-(.+)\\.jar$");
 
-  private RobolectricTestExtractor() {}
+  private RobolectricTestAnnotator() {}
 
-  public static void capture() {
+  public static void annotate() {
     int apiLevel = RuntimeEnvironment.getApiLevel();
     if (apiLevel <= 0) {
       return;
     }
-    String release = null;
-    String codename = null;
-    AndroidVersions.AndroidRelease androidRelease = AndroidVersions.getReleaseForSdkInt(apiLevel);
-    if (androidRelease != null) {
-      release = androidRelease.getVersion();
-      codename = androidRelease.getShortCode();
+
+    AgentSpan span = AgentTracer.activeSpan();
+    if (span == null) {
+      return;
     }
-    AndroidTestContext.set(new AndroidTestInfo(apiLevel, release, codename, robolectricVersion()));
+    RequestContext requestContext = span.getRequestContext();
+    if (requestContext == null
+        || requestContext.getData(RequestContextSlot.CI_VISIBILITY) == null) {
+      // The active span is not a CI Visibility test span; nothing to enrich.
+      return;
+    }
+
+    span.setTag(Tags.TEST_ANDROID_API_LEVEL, apiLevel);
+    AndroidVersions.AndroidRelease release = AndroidVersions.getReleaseForSdkInt(apiLevel);
+    if (release != null) {
+      span.setTag(Tags.TEST_ANDROID_RELEASE, release.getVersion());
+      span.setTag(Tags.TEST_ANDROID_CODENAME, release.getShortCode());
+    }
+    String robolectricVersion = robolectricVersion();
+    if (robolectricVersion != null) {
+      span.setTag(Tags.TEST_ANDROID_ROBOLECTRIC_VERSION, robolectricVersion);
+    }
   }
 
   private static String robolectricVersion() {

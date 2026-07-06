@@ -15,15 +15,7 @@ import net.bytebuddy.matcher.ElementMatcher;
  *
  * <p>Robolectric establishes the emulated SDK in {@code TestEnvironment#setUpApplicationState},
  * which runs on the per-SDK sandbox "main" thread right before the test body (the SDK is not yet
- * set when the JUnit test-start event fires, and is torn down before the finish event). This
- * instrumentation reads the SDK there and stashes it in {@link
- * datadog.trace.api.civisibility.android.AndroidTestContext}; the CI Visibility core drains it and
- * attaches the {@code test.android.*} tags to the test span (see {@code
- * TestEventsHandlerImpl#onTestFinish}).
- *
- * <p>Robolectric tests are JUnit tests, so their spans are still produced by the JUnit
- * instrumentation — this only enriches them with the Android metadata, and only loads when
- * Robolectric is on the classpath.
+ * set when the JUnit test-start event fires, and is torn down before the finish event).
  */
 @AutoService(InstrumenterModule.class)
 public class RobolectricInstrumentation extends InstrumenterModule.CiVisibility
@@ -57,7 +49,7 @@ public class RobolectricInstrumentation extends InstrumenterModule.CiVisibility
   public static class SetUpApplicationStateAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     public static void onExit() {
-      RobolectricTestExtractor.capture();
+      RobolectricTestAnnotator.annotate();
     }
   }
 }

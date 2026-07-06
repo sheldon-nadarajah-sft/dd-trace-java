@@ -212,8 +212,8 @@
       "_dd.profiling.enabled" : 0,
       "_dd.trace_span_attribute_schema" : 0,
       "process_id" : ${content_metrics_process_id_2},
-      "test.source.end" : 21,
-      "test.source.start" : 13
+      "test.source.end" : 19,
+      "test.source.start" : 11
     },
     "name" : "junit4.test_suite",
     "resource" : "datadog.smoke.AndroidJUnit4RunnerTest",
@@ -278,8 +278,8 @@
       "_dd.trace_span_attribute_schema" : 0,
       "process_id" : ${content_metrics_process_id_2},
       "test.android.api_level" : 34,
-      "test.source.end" : 20,
-      "test.source.start" : 17
+      "test.source.end" : 18,
+      "test.source.start" : 15
     },
     "name" : "junit4.test",
     "parent_id" : ${content_parent_id},
