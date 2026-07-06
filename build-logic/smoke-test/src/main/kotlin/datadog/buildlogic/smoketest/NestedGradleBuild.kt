@@ -54,6 +54,8 @@ abstract class NestedGradleBuild @Inject constructor(
     gradleDistributionBaseUrl.convention(
       project.providers.environmentVariable(MASS_READ_URL_ENV),
     )
+    initScripts.convention(emptyList())
+    gradleProperties.convention(emptyMap())
     javaLauncher.convention(
       javaToolchains.launcherFor {
         languageVersion.set(JavaLanguageVersion.of(DEFAULT_NESTED_JAVA_VERSION))
@@ -84,6 +86,12 @@ abstract class NestedGradleBuild @Inject constructor(
   @get:Optional
   abstract val gradleDistributionBaseUrl: Property<String>
 
+  @get:Input
+  abstract val initScripts: ListProperty<String>
+
+  @get:Input
+  abstract val gradleProperties: MapProperty<String, String>
+
   @get:Nested
   abstract val javaLauncher: Property<JavaLauncher>
 
@@ -104,6 +112,11 @@ abstract class NestedGradleBuild @Inject constructor(
    */
   @get:Input
   abstract val buildCacheEnabled: Property<Boolean>
+
+  /** Timeout, in seconds, for stopping the nested Gradle daemon after the build. */
+  @get:Input
+  @get:Optional
+  abstract val stopTimeoutSeconds: Property<Long>
 
   /**
    * Extra environment variables for the nested Gradle daemon. Merged on top of the outer process
@@ -143,10 +156,18 @@ abstract class NestedGradleBuild @Inject constructor(
     val appBuildDirFile = applicationBuildDir.get().asFile
     val daemonJavaHome = javaLauncher.get().metadata.installationPath.asFile
     val gradleUserHomeDir = createGradleUserHome()
+    val initScriptFiles = writeInitScripts()
 
     val args = buildList {
+      initScriptFiles.forEach { script ->
+        add("--init-script")
+        add(script.absolutePath)
+      }
       add(if (buildCacheEnabled.get()) "--build-cache" else "--no-build-cache")
       add("-PappBuildDir=${appBuildDirFile.absolutePath}")
+      gradleProperties.get().forEach { (name, value) ->
+        addGradleProperty(name, value)
+      }
       projectJars.get().forEach { entry ->
         add("-P${entry.propertyName.get()}=${entry.file.get().asFile.absolutePath}")
       }
@@ -220,9 +241,17 @@ abstract class NestedGradleBuild @Inject constructor(
       }
 
       val process = processBuilder.start()
-      if (!process.waitFor(GRADLE_STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      val timeoutSeconds = stopTimeoutSeconds.orNull
+      val completed =
+        if (timeoutSeconds == null) {
+          process.waitFor()
+          true
+        } else {
+          process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+        }
+      if (!completed) {
         process.destroyForcibly()
-        logger.warn("Timed out while stopping nested Gradle daemon")
+        logger.warn("Timed out after {} seconds while stopping nested Gradle daemon", timeoutSeconds)
         return
       }
       val exitCode = process.exitValue()
@@ -240,18 +269,18 @@ abstract class NestedGradleBuild @Inject constructor(
     }
   }
 
+  private fun writeInitScripts(): List<File> =
+    initScripts.get().mapIndexed { index, script ->
+      temporaryDir.resolve("init-$index.init.gradle.kts").also { file ->
+        file.writeText(script)
+      }
+    }
+
   private fun findGradleExecutable(gradleUserHomeDir: File): File? =
     gradleUserHomeDir.walkTopDown().firstOrNull { file ->
       file.isFile &&
         file.name == gradleExecutableName() &&
         file.parentFile?.name == "bin"
-    }
-
-  private fun gradleExecutableName(): String =
-    if (System.getProperty("os.name").lowercase().contains("windows")) {
-      "gradle.bat"
-    } else {
-      "gradle"
     }
 
   private fun createGradleUserHome(): File {
@@ -271,7 +300,23 @@ abstract class NestedGradleBuild @Inject constructor(
     }
   }
 
-  private companion object {
-    const val GRADLE_STOP_TIMEOUT_SECONDS = 30L
+  companion object {
+    internal fun gradleExecutableName(osName: String = System.getProperty("os.name")): String =
+      if (isWindows(osName)) {
+        "gradle.bat"
+      } else {
+        "gradle"
+      }
   }
 }
+
+private fun MutableList<String>.addGradleProperty(name: String, value: String?) {
+  if (!value.isNullOrBlank()) {
+    add("-P$name=$value")
+  }
+}
+
+internal val PROXY_REPOSITORIES_INIT_SCRIPT: String =
+  NestedGradleBuild::class.java.getResource("proxy-repositories.init.gradle.kts")
+    ?.readText()
+    ?: error("Missing proxy-repositories.init.gradle.kts resource")
