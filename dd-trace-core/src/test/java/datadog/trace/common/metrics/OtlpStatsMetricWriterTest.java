@@ -636,7 +636,7 @@ class OtlpStatsMetricWriterTest {
     // runtime-id is enabled by default, so default-mode payloads carry datadog.runtime_id on the
     // Resource.
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, false, null);
     writer.startBucket(1, SECONDS.toNanos(1_700_000_000L), SECONDS.toNanos(10));
     writer.add(okEntry(SECONDS.toNanos(1), 1));
     writer.finishBucket();
@@ -653,7 +653,7 @@ class OtlpStatsMetricWriterTest {
   @Test
   void otelSemanticsModeResourceOmitsDatadogAttributes() throws IOException {
     CapturingSender sender = new CapturingSender();
-    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, true);
+    OtlpStatsMetricWriter writer = new OtlpStatsMetricWriter(sender, true, null);
     writer.startBucket(1, SECONDS.toNanos(1_700_000_000L), SECONDS.toNanos(10));
     writer.add(okEntry(SECONDS.toNanos(1), 1));
     writer.finishBucket();

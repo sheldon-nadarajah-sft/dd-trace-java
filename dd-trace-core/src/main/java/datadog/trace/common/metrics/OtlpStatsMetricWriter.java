@@ -24,7 +24,6 @@ import datadog.trace.bootstrap.otlp.metrics.OtlpHistogramPoint;
 import datadog.trace.core.otlp.common.OtlpGrpcSender;
 import datadog.trace.core.otlp.common.OtlpHttpSender;
 import datadog.trace.core.otlp.common.OtlpProtoBuffer;
-import datadog.trace.core.otlp.common.OtlpResourceProto;
 import datadog.trace.core.otlp.common.OtlpSender;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
