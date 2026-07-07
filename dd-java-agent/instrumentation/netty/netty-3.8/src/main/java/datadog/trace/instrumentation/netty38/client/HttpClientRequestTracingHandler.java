@@ -3,13 +3,13 @@ package datadog.trace.instrumentation.netty38.client;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
-import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.currentContext;
 import static datadog.trace.instrumentation.netty38.client.NettyHttpClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.netty38.client.NettyHttpClientDecorator.DECORATE_SECURE;
 import static datadog.trace.instrumentation.netty38.client.NettyHttpClientDecorator.NETTY_CLIENT;
 import static datadog.trace.instrumentation.netty38.client.NettyHttpClientDecorator.NETTY_CLIENT_REQUEST;
 import static datadog.trace.instrumentation.netty38.client.NettyResponseInjectAdapter.SETTER;
 
+import datadog.context.Context;
 import datadog.context.ContextScope;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
@@ -66,7 +66,7 @@ public class HttpClientRequestTracingHandler extends SimpleChannelDownstreamHand
         decorate.onPeerConnection(span, (InetSocketAddress) socketAddress);
       }
 
-      DECORATE.injectContext(currentContext(), request.headers(), SETTER);
+      DECORATE.injectContext(Context.current(), request.headers(), SETTER);
 
       channelTraceContext.setClientSpan(span);
 
