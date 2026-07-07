@@ -24,6 +24,12 @@ class DdprofLibraryLoaderTest {
         DdprofLibraryLoader.resolveWallPrecheckGetInstance(WithoutWallPrecheckSupport.class));
   }
 
+  @Test
+  void returnsNullWhenFourArgOverloadIsNotPublic() {
+    assertNull(
+        DdprofLibraryLoader.resolveWallPrecheckGetInstance(WithNonPublicWallPrecheckSupport.class));
+  }
+
   public static final class WithWallPrecheckSupport {
     public static Object getInstance(String a, String b, boolean c, boolean d) {
       return null;
@@ -32,6 +38,12 @@ class DdprofLibraryLoaderTest {
 
   public static final class WithoutWallPrecheckSupport {
     public static Object getInstance(String a, String b) {
+      return null;
+    }
+  }
+
+  public static final class WithNonPublicWallPrecheckSupport {
+    private static Object getInstance(String a, String b, boolean c, boolean d) {
       return null;
     }
   }
