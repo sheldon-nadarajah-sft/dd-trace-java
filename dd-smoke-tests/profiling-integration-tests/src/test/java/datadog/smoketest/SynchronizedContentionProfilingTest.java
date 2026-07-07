@@ -4,9 +4,6 @@ import static datadog.smoketest.SmokeTestUtils.checkProcessSuccessfullyEnd;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.HashSet;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
@@ -65,7 +62,7 @@ final class SynchronizedContentionProfilingTest
         "Expected distinct blocker values across the three contention scenarios");
 
     assertFalse(
-        logHasSynchronizedContentionError(),
+        logHasInstrumentationError("Failed to handle exception in instrumentation", "VerifyError"),
         "native synchronized-contention TaskBlock path must not produce errors");
   }
 
@@ -97,13 +94,6 @@ final class SynchronizedContentionProfilingTest
   @Override
   protected void addEvents(JfrStats stats, IItemCollection events) {
     stats.add(events);
-  }
-
-  private boolean logHasSynchronizedContentionError() throws IOException {
-    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
-    return log.contains("NoClassDefFoundError")
-        || log.contains("Failed to handle exception in instrumentation")
-        || log.contains("VerifyError");
   }
 
   // ------------------------------------------------------------------ stats

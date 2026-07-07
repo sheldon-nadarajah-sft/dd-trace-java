@@ -45,8 +45,7 @@ public class LockSupportProfilingInstrumentation extends InstrumenterModule.Prof
   @Override
   public boolean isEnabled() {
     return super.isEnabled()
-        && Config.get().isDatadogProfilerEnabled()
-        && TaskBlockInstrumentationConfig.isWallPrecheckEnabled(ConfigProvider.getInstance());
+        && TaskBlockInstrumentationConfig.isEnabled(Config.get(), ConfigProvider.getInstance());
   }
 
   @Override

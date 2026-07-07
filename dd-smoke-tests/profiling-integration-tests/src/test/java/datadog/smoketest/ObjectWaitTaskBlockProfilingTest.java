@@ -10,9 +10,6 @@ import io.opentracing.Scope;
 import io.opentracing.Span;
 import io.opentracing.Tracer;
 import io.opentracing.util.GlobalTracer;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IAttribute;
@@ -64,7 +61,10 @@ final class ObjectWaitTaskBlockProfilingTest
     assertFalse(
         stats.hasNonZeroUnblockingSpanId,
         "Object.wait TaskBlocks must report unblockingSpanId == 0 (notify is still native)");
-    assertFalse(logHasObjectWaitInstrumentationError(), "Object.wait instrumentation failed");
+    assertFalse(
+        logHasInstrumentationError(
+            "Failed to handle exception in instrumentation for java.lang.Object"),
+        "Object.wait instrumentation failed");
   }
 
   @Override
@@ -95,12 +95,6 @@ final class ObjectWaitTaskBlockProfilingTest
   @Override
   protected void addEvents(JfrStats stats, IItemCollection events) {
     stats.add(events);
-  }
-
-  private boolean logHasObjectWaitInstrumentationError() throws IOException {
-    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
-    return log.contains("NoClassDefFoundError")
-        || log.contains("Failed to handle exception in instrumentation for java.lang.Object");
   }
 
   public static final class ObjectWaitTaskBlockForkedApp {

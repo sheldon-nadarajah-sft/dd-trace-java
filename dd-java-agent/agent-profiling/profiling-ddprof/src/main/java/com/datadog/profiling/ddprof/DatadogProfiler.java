@@ -13,7 +13,6 @@ import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getStackDepth;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallCollapsing;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallContextFilter;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallInterval;
-import static com.datadog.profiling.ddprof.DatadogProfilerConfig.getWallPrecheck;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isAllocationProfilingEnabled;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isCpuProfilerEnabled;
 import static com.datadog.profiling.ddprof.DatadogProfilerConfig.isLiveHeapSizeTrackingEnabled;
@@ -41,6 +40,7 @@ import datadog.libs.ddprof.DdprofLibraryLoader;
 import datadog.trace.api.config.ProfilingConfig;
 import datadog.trace.api.internal.VisibleForTesting;
 import datadog.trace.api.profiling.RecordingData;
+import datadog.trace.api.profiling.TaskBlockInstrumentationConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.bootstrap.instrumentation.api.TaskWrapper;
 import datadog.trace.util.TempLocationManager;
@@ -262,7 +262,8 @@ public final class DatadogProfiler {
           "Unable to instantiate datadog profiler", reasonNotLoaded);
     }
     this.taskBlockBridge = new TaskBlockBridge(profiler);
-    if (getWallPrecheck(configProvider) && !taskBlockBridge.hasTaskBlockEventSupport()) {
+    if (TaskBlockInstrumentationConfig.isWallPrecheckEnabled(configProvider)
+        && !taskBlockBridge.hasTaskBlockEventSupport()) {
       log.debug(
           "TaskBlock profiling bridge methods are unavailable in the loaded ddprof artifact; "
               + "Java-level TaskBlock events will be skipped.");
@@ -464,7 +465,7 @@ public final class DatadogProfiler {
       } else {
         cmd.append(",filter=");
       }
-      if (getWallPrecheck(configProvider)) {
+      if (TaskBlockInstrumentationConfig.isWallPrecheckEnabled(configProvider)) {
         cmd.append(",wallprecheck=true");
       }
     }

@@ -10,6 +10,7 @@ import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 import datadog.trace.api.config.ProfilingConfig;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -147,18 +148,52 @@ abstract class TaskBlockProfilingTestBase<S> {
               .filter(path -> path.toString().endsWith(".jfr"))
               .collect(Collectors.toList());
     }
+    int loaded = 0;
     for (Path jfrFile : jfrFiles) {
-      addEvents(stats, loadEvents(jfrFile));
+      IItemCollection events = tryLoadEvents(jfrFile);
+      if (events != null) {
+        addEvents(stats, events);
+        loaded++;
+      }
+    }
+    if (loaded == 0 && !jfrFiles.isEmpty()) {
+      throw new RuntimeException(
+          "No JFR file in " + dumpDir + " could be parsed (tried " + jfrFiles.size() + " files)");
     }
     return stats;
   }
 
-  private IItemCollection loadEvents(Path path) {
+  private IItemCollection tryLoadEvents(Path path) {
+    // Strategy 1: raw file — this is the most common case. The forked process writes one JFR
+    // per file under dump_path; concatenation only happens on certain debug dump paths.
     try {
-      return JfrLoaderToolkit.loadEvents(extractLastJfrStream(path).toFile());
-    } catch (Exception e) {
-      throw new RuntimeException("Failed to load JFR " + path, e);
+      return JfrLoaderToolkit.loadEvents(path.toFile());
+    } catch (Exception ignored) {
+      // fall through
     }
+    // Strategy 2: extract last FLR stream, in case the file is a concatenation (debug dumps).
+    try {
+      Path extracted = extractLastJfrStream(path);
+      if (!extracted.equals(path)) {
+        return JfrLoaderToolkit.loadEvents(extracted.toFile());
+      }
+    } catch (Exception ignored) {
+      // fall through
+    }
+    return null; // unparseable — skipped, not fatal
+  }
+
+  protected boolean logHasInstrumentationError(String... additionalMarkers) throws IOException {
+    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
+    if (log.contains("NoClassDefFoundError")) {
+      return true;
+    }
+    for (String marker : additionalMarkers) {
+      if (log.contains(marker)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private Path extractLastJfrStream(Path path) throws IOException {

@@ -303,7 +303,7 @@ class LockSupportProfilingInstrumentationTest {
     Thread current = Thread.currentThread();
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext context = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(context);
+    when(span.spanContext()).thenReturn(context);
     when(context.getSpanId()).thenReturn(99L);
     AgentTracer.forceRegister(mockTracerWithActiveSpan(span));
 
@@ -338,7 +338,7 @@ class LockSupportProfilingInstrumentationTest {
   private static void installActiveProfilerSpan() {
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext context = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(context);
+    when(span.spanContext()).thenReturn(context);
     AgentTracer.forceRegister(mockTracerWithActiveSpan(span));
   }
 

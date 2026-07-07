@@ -10,9 +10,6 @@ import io.opentracing.Scope;
 import io.opentracing.Span;
 import io.opentracing.Tracer;
 import io.opentracing.util.GlobalTracer;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
@@ -68,7 +65,10 @@ final class LockSupportTaskBlockProfilingTest
     assertTrue(
         stats.hasExpectedOperation,
         "Expected TaskBlock events to include LockSupport span operation names");
-    assertFalse(logHasLockSupportInstrumentationError(), "LockSupport instrumentation failed");
+    assertFalse(
+        logHasInstrumentationError(
+            "Failed to handle exception in instrumentation for java.util.concurrent.locks.LockSupport"),
+        "LockSupport instrumentation failed");
   }
 
   @Override
@@ -99,13 +99,6 @@ final class LockSupportTaskBlockProfilingTest
   @Override
   protected void addEvents(JfrStats stats, IItemCollection events) {
     stats.add(events);
-  }
-
-  private boolean logHasLockSupportInstrumentationError() throws IOException {
-    String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
-    return log.contains("NoClassDefFoundError")
-        || log.contains(
-            "Failed to handle exception in instrumentation for java.util.concurrent.locks.LockSupport");
   }
 
   public static final class LockSupportTaskBlockForkedApp {
