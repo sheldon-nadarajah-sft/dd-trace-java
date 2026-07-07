@@ -84,9 +84,6 @@ class DatadogProfilerTest {
     assertDoesNotThrow(
         () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
     DatadogProfiler profiler = DatadogProfiler.newInstance(ConfigProvider.getInstance());
-    Assumptions.assumeTrue(
-        profiler.hasTaskBlockEventSupport(),
-        "Loaded ddprof artifact does not expose TaskBlock bridge methods");
     if (profiler.isActive()) {
       log.warn("Datadog profiler is already running. Skipping task-block integration test.");
       return;
@@ -99,15 +96,9 @@ class DatadogProfilerTest {
     }
 
     // The native TaskBlock gate filters events when span_id != 0 (reads from OTEP TLS).
-    // Clear span context so both the recordTaskBlock and park paths are eligible to emit.
+    // Clear span context so the park path is eligible to emit.
     profiler.clearSpanContext();
     try {
-      // Direct bridge path (recordTaskBlock -> JavaProfiler.recordTaskBlock0). Span ids are no
-      // longer passed across JNI; the native side reads the zero context from OTEP TLS.
-      long startTicks = profiler.getCurrentTicks();
-      LockSupport.parkNanos(3_000_000L); // > 1ms native threshold
-      profiler.recordTaskBlockEvent(startTicks, 303L, 404L);
-
       // Park path (parkEnter/parkExit -> JavaProfiler.parkEnter0/parkExit0)
       profiler.parkEnter();
       LockSupport.parkNanos(3_000_000L); // > 1ms native threshold

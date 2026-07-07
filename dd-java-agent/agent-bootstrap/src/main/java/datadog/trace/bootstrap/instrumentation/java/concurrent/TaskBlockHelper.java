@@ -2,7 +2,6 @@ package datadog.trace.bootstrap.instrumentation.java.concurrent;
 
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
-import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
 
 /**
@@ -32,22 +31,6 @@ public final class TaskBlockHelper {
     final long blockToken;
     final long spanId;
     final long rootSpanId;
-
-    State(
-        final ProfilingContextIntegration profiling,
-        final long startTicks,
-        final long startNanos,
-        final long blocker) {
-      this.profiling = profiling;
-      this.startTicks = startTicks;
-      this.startNanos = startNanos;
-      this.blocker = blocker;
-      this.isVirtual = false;
-      this.deferred = false;
-      this.blockToken = 0L;
-      this.spanId = 0L;
-      this.rootSpanId = 0L;
-    }
 
     State(
         final ProfilingContextIntegration profiling,
@@ -88,17 +71,8 @@ public final class TaskBlockHelper {
     }
   }
 
-  public static State capture(final long blocker) {
-    return capture(
-        blocker, AgentTracer.get().getProfilingContext(), AgentTracer.activeSpan(), false);
-  }
-
   public static State captureForSleep() {
     return captureSafely(0L, true);
-  }
-
-  static State captureSafely(final long blocker) {
-    return captureSafely(blocker, false);
   }
 
   static State captureSafely(final long blocker, final boolean deferred) {
@@ -110,20 +84,6 @@ public final class TaskBlockHelper {
     }
   }
 
-  static State captureSafely(
-      final long blocker, final ProfilingContextIntegration profiling, final AgentSpan span) {
-    try {
-      return capture(blocker, profiling, span, false);
-    } catch (Throwable ignored) {
-      return null;
-    }
-  }
-
-  static State capture(
-      final long blocker, final ProfilingContextIntegration profiling, final AgentSpan span) {
-    return capture(blocker, profiling, span, false);
-  }
-
   static State capture(
       final long blocker,
       final ProfilingContextIntegration profiling,
@@ -132,11 +92,7 @@ public final class TaskBlockHelper {
     if (profiling == null) {
       return null;
     }
-    ProfilerContext context = ProfilerContexts.of(span);
-    if (span != null && context == null) {
-      return null;
-    }
-    if (context != null && context.getSpanId() != 0L) {
+    if (!ProfilerContexts.isEligibleForTaskBlock(span)) {
       return null;
     }
     long startTicks = profiling.getCurrentTicks();
@@ -144,11 +100,13 @@ public final class TaskBlockHelper {
     if (VirtualThreads.isCurrent()) {
       return new State(profiling, startTicks, startNanos, blocker, 0L, 0L);
     }
-    if (deferred) {
-      long blockToken = profiling.blockEnter(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING);
-      return new State(profiling, startTicks, startNanos, blocker, true, 0L, 0L, blockToken);
+    if (!deferred) {
+      // Non-deferred, non-virtual capture has no live production caller (captureForSleep()
+      // always passes deferred=true) and no remaining State shape to represent it.
+      return null;
     }
-    return new State(profiling, startTicks, startNanos, blocker);
+    long blockToken = profiling.blockEnter(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING);
+    return new State(profiling, startTicks, startNanos, blocker, true, 0L, 0L, blockToken);
   }
 
   public static void finish(final State state) {
@@ -188,8 +146,6 @@ public final class TaskBlockHelper {
           state.profiling.recordTaskBlockWithContext(
               state.startTicks, state.blocker, 0L, state.spanId, state.rootSpanId);
         }
-      } else {
-        state.profiling.recordTaskBlock(state.startTicks, state.blocker, 0L);
       }
     } catch (Throwable ignored) {
     } finally {

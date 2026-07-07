@@ -21,4 +21,13 @@ final class ProfilerContexts {
     AgentSpanContext context = span.spanContext();
     return context instanceof ProfilerContext ? (ProfilerContext) context : null;
   }
+
+  /** True if there is no active traced span that should suppress a TaskBlock capture. */
+  static boolean isEligibleForTaskBlock(AgentSpan span) {
+    ProfilerContext context = of(span);
+    if (span != null && context == null) {
+      return false;
+    }
+    return context == null || context.getSpanId() == 0L;
+  }
 }

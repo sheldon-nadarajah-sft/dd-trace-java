@@ -48,18 +48,7 @@ public interface ProfilingContextIntegration extends Profiling, EndpointCheckpoi
   }
 
   /**
-   * Emits a TaskBlock event covering a blocking interval on the current thread. Span context is
-   * captured natively from the OTEP TLS sidecar at JNI entry, matching the {@code recordQueueTime}
-   * convention.
-   *
-   * @param startTicks TSC tick at block entry
-   * @param blocker identity hash code of the blocking object, or 0 if none
-   * @param unblockingSpanId the span ID of the thread that unblocked this thread, or 0 if unknown
-   */
-  default void recordTaskBlock(long startTicks, long blocker, long unblockingSpanId) {}
-
-  /**
-   * Variant of {@link #recordTaskBlock} for virtual threads.
+   * Emits a TaskBlock event for virtual threads.
    *
    * <p>Virtual threads are multiplexed on OS carrier threads; the native OTEP TLS sidecar is
    * carrier-scoped and cannot be trusted between capture (block entry) and emit (block exit). Java

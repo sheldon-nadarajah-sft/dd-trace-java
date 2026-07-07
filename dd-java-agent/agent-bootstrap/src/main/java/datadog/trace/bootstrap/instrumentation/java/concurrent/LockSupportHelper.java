@@ -1,6 +1,5 @@
 package datadog.trace.bootstrap.instrumentation.java.concurrent;
 
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
@@ -111,7 +110,7 @@ public final class LockSupportHelper {
       return null;
     }
     long blockerHash = blocker != null ? System.identityHashCode(blocker) : 0L;
-    if (hasActiveTraceContext()) {
+    if (!ProfilerContexts.isEligibleForTaskBlock(AgentTracer.activeSpan())) {
       return null;
     }
     if (VirtualThreads.isCurrent()) {
@@ -185,14 +184,5 @@ public final class LockSupportHelper {
       return;
     }
     UNPARKING_SPAN.put(thread, ctx.getSpanId());
-  }
-
-  private static boolean hasActiveTraceContext() {
-    AgentSpan span = AgentTracer.activeSpan();
-    if (span == null) {
-      return false;
-    }
-    ProfilerContext ctx = ProfilerContexts.of(span);
-    return ctx == null || ctx.getSpanId() != 0L;
   }
 }

@@ -237,19 +237,19 @@ class LockSupportProfilingInstrumentationTest {
   void parkAdvice_finish_virtualState_recordsTaskBlockWithContext() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     LockSupportHelper.ParkState state =
-        new LockSupportHelper.ParkState(profiling, 22L, 11L, 33L, 44L);
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 0L, 44L);
 
     LockSupportHelper.finish(state, 55L);
 
-    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 0L, 44L);
     verify(profiling, never()).parkExit(22L, 55L);
   }
 
   @Test
-  void parkAdvice_finish_virtualStateWithZeroSpan_doesNotRecordTaskBlock() {
+  void parkAdvice_finish_virtualStateWithActiveSpan_doesNotRecordTaskBlock() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     LockSupportHelper.ParkState state =
-        new LockSupportHelper.ParkState(profiling, 22L, 11L, 0L, 44L);
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 33L, 44L);
 
     LockSupportHelper.finish(state, 55L);
 
@@ -260,14 +260,14 @@ class LockSupportProfilingInstrumentationTest {
   void parkAdvice_finish_suppressesVirtualTaskBlockException() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     LockSupportHelper.ParkState state =
-        new LockSupportHelper.ParkState(profiling, 22L, 11L, 33L, 44L);
+        new LockSupportHelper.ParkState(profiling, 22L, 11L, 0L, 44L);
     doThrow(new RuntimeException("boom"))
         .when(profiling)
-        .recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+        .recordTaskBlockWithContext(11L, 22L, 55L, 0L, 44L);
 
     assertDoesNotThrow(() -> LockSupportHelper.finish(state, 55L));
 
-    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 33L, 44L);
+    verify(profiling).recordTaskBlockWithContext(11L, 22L, 55L, 0L, 44L);
   }
 
   @Test

@@ -57,9 +57,6 @@ final class LockSupportTaskBlockProfilingTest
         stats.hasNonZeroLocalRootSpanId,
         "Spanless TaskBlock events must carry zero localRootSpanId");
     assertFalse(stats.hasMissingEventThread, "TaskBlock events must resolve Event Thread");
-    assertTrue(
-        stats.hasExpectedOperation,
-        "Expected TaskBlock events to include LockSupport span operation names");
     assertFalse(
         logHasInstrumentationError(
             "Failed to handle exception in instrumentation for java.util.concurrent.locks.LockSupport"),

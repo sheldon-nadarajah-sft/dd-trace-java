@@ -502,12 +502,6 @@ public final class DatadogProfiler {
     return profiler.getCurrentTicks();
   }
 
-  int encode(CharSequence constant) {
-    // java-profiler ContextSetter no longer exposes value encoding.
-    // Keep API contract by returning "not encoded" (0), which callers already handle.
-    return 0;
-  }
-
   public int operationNameOffset() {
     return offsetOf(OPERATION);
   }
@@ -791,10 +785,6 @@ public final class DatadogProfiler {
     return profiler != null ? taskBlockBridge.getTscFrequency() : 1_000_000_000L;
   }
 
-  boolean hasTaskBlockEventSupport() {
-    return profiler != null && taskBlockBridge.hasTaskBlockEventSupport();
-  }
-
   boolean hasTaskBlockFromContextSupport() {
     return profiler != null && taskBlockBridge.hasTaskBlockFromContextSupport();
   }
@@ -815,13 +805,6 @@ public final class DatadogProfiler {
   void blockExit(long token, long[] snapshot) {
     if (token != 0L && profiler != null) {
       taskBlockBridge.blockExit(token, snapshot);
-    }
-  }
-
-  void recordTaskBlockEvent(long startTicks, long blocker, long unblockingSpanId) {
-    if (profiler != null && recordingFlag.get()) {
-      long endTicks = profiler.getCurrentTicks();
-      taskBlockBridge.recordTaskBlock(startTicks, endTicks, blocker, unblockingSpanId);
     }
   }
 
@@ -895,7 +878,6 @@ public final class DatadogProfiler {
     private final JavaProfiler profiler;
     private final Method getCurrentThreadId;
     private final Method getTscFrequency;
-    private final Method recordTaskBlock;
     private final Method recordTaskBlockWithContext;
     private final Method recordTaskBlockFromContext;
     private final Method recordTaskBlockFromContextWithSuppression;
@@ -909,8 +891,6 @@ public final class DatadogProfiler {
       this.profiler = profiler;
       this.getCurrentThreadId = method("getCurrentThreadId");
       this.getTscFrequency = method("getTscFrequency");
-      this.recordTaskBlock =
-          method("recordTaskBlock", long.class, long.class, long.class, long.class);
       this.recordTaskBlockWithContext =
           method(
               "recordTaskBlockWithContext",
@@ -957,10 +937,6 @@ public final class DatadogProfiler {
       return ((Number) invoke(getCurrentThreadId)).intValue();
     }
 
-    private boolean hasTaskBlockEventSupport() {
-      return recordTaskBlock != null && parkEnter != null && parkExit != null;
-    }
-
     private boolean hasTaskBlockFromContextSupport() {
       return getCurrentThreadId != null && recordTaskBlockFromContext != null;
     }
@@ -970,11 +946,6 @@ public final class DatadogProfiler {
         return DEFAULT_TSC_FREQUENCY;
       }
       return ((Number) invoke(getTscFrequency)).longValue();
-    }
-
-    private void recordTaskBlock(
-        long startTicks, long endTicks, long blocker, long unblockingSpanId) {
-      invokeIfPresent(recordTaskBlock, startTicks, endTicks, blocker, unblockingSpanId);
     }
 
     private void recordTaskBlockWithContext(

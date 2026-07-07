@@ -1,8 +1,6 @@
 package datadog.trace.instrumentation.threadsleep;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_PRECHECK;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_PRECHECK_DEFAULT;
 import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.isStatic;
@@ -13,6 +11,7 @@ import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
 import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
+import datadog.trace.api.profiling.TaskBlockInstrumentationConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.TaskBlockHelper;
 import net.bytebuddy.asm.Advice;
@@ -31,11 +30,7 @@ public class TimeUnitSleepProfilingInstrumentation extends InstrumenterModule.Pr
   @Override
   public boolean isEnabled() {
     return super.isEnabled()
-        && Config.get().isDatadogProfilerEnabled()
-        && ConfigProvider.getInstance()
-            .getBoolean(
-                PROFILING_DATADOG_PROFILER_WALL_PRECHECK,
-                PROFILING_DATADOG_PROFILER_WALL_PRECHECK_DEFAULT);
+        && TaskBlockInstrumentationConfig.isEnabled(Config.get(), ConfigProvider.getInstance());
   }
 
   @Override

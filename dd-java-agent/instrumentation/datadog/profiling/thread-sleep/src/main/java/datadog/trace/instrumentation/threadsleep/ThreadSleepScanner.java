@@ -1,7 +1,11 @@
 package datadog.trace.instrumentation.threadsleep;
 
+import static datadog.trace.agent.tooling.bytebuddy.csi.ConstantPool.CONSTANT_CLASS_TAG;
+import static datadog.trace.agent.tooling.bytebuddy.csi.ConstantPool.CONSTANT_METHODREF_TAG;
+import static datadog.trace.agent.tooling.bytebuddy.csi.ConstantPool.CONSTANT_NAME_AND_TYPE_TAG;
 import static datadog.trace.instrumentation.threadsleep.ThreadSleepCallSiteMethodVisitor.THREAD_INTERNAL;
 
+import datadog.trace.agent.tooling.bytebuddy.csi.ConstantPool;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import net.bytebuddy.description.type.TypeDescription;
@@ -20,26 +24,6 @@ import net.bytebuddy.description.type.TypeDescription;
  * rewriting all of them is too expensive for a broad hierarchy instrumentation.
  */
 public final class ThreadSleepScanner {
-
-  private static final int CLASSFILE_MAGIC = 0xCAFEBABE;
-
-  private static final int CONSTANT_UTF8 = 1;
-  private static final int CONSTANT_INTEGER = 3;
-  private static final int CONSTANT_FLOAT = 4;
-  private static final int CONSTANT_LONG = 5;
-  private static final int CONSTANT_DOUBLE = 6;
-  private static final int CONSTANT_CLASS = 7;
-  private static final int CONSTANT_STRING = 8;
-  private static final int CONSTANT_FIELDREF = 9;
-  private static final int CONSTANT_METHODREF = 10;
-  private static final int CONSTANT_INTERFACE_METHODREF = 11;
-  private static final int CONSTANT_NAME_AND_TYPE = 12;
-  private static final int CONSTANT_METHOD_HANDLE = 15;
-  private static final int CONSTANT_METHOD_TYPE = 16;
-  private static final int CONSTANT_DYNAMIC = 17;
-  private static final int CONSTANT_INVOKE_DYNAMIC = 18;
-  private static final int CONSTANT_MODULE = 19;
-  private static final int CONSTANT_PACKAGE = 20;
 
   private static final String SLEEP_NAME = "sleep";
 
@@ -69,10 +53,36 @@ public final class ThreadSleepScanner {
   /** Package-private for unit testing. */
   static boolean scan(byte[] classBytes) {
     try {
-      return new ConstantPoolScanner(classBytes).containsThreadSleepMethodRef();
+      return containsThreadSleepMethodRef(new ConstantPool(classBytes));
     } catch (Exception e) {
       return true;
     }
+  }
+
+  private static boolean containsThreadSleepMethodRef(ConstantPool cp) {
+    int count = cp.getCount();
+    for (int i = 1; i < count; i++) {
+      if (cp.getType(i) != CONSTANT_METHODREF_TAG) {
+        continue;
+      }
+      int methodOffset = cp.getOffset(i);
+      int classIndex = cp.readUnsignedShort(methodOffset);
+      int nameAndTypeIndex = cp.readUnsignedShort(methodOffset + 2);
+      if (cp.getType(classIndex) != CONSTANT_CLASS_TAG
+          || cp.getType(nameAndTypeIndex) != CONSTANT_NAME_AND_TYPE_TAG) {
+        continue;
+      }
+      String owner = cp.readUTF8(cp.getOffset(cp.readUnsignedShort(cp.getOffset(classIndex))));
+      int nameAndTypeOffset = cp.getOffset(nameAndTypeIndex);
+      String name = cp.readUTF8(cp.getOffset(cp.readUnsignedShort(nameAndTypeOffset)));
+      String descriptor = cp.readUTF8(cp.getOffset(cp.readUnsignedShort(nameAndTypeOffset + 2)));
+      if (THREAD_INTERNAL.equals(owner)
+          && SLEEP_NAME.equals(name)
+          && isThreadSleepDescriptor(descriptor)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static byte[] readAllBytes(InputStream input) throws Exception {
@@ -89,140 +99,5 @@ public final class ThreadSleepScanner {
     return ThreadSleepCallSiteMethodVisitor.SLEEP_J_DESC.equals(descriptor)
         || ThreadSleepCallSiteMethodVisitor.SLEEP_JI_DESC.equals(descriptor)
         || ThreadSleepCallSiteMethodVisitor.SLEEP_DURATION_DESC.equals(descriptor);
-  }
-
-  private static final class ConstantPoolScanner {
-    private final byte[] bytes;
-    private int offset;
-
-    ConstantPoolScanner(byte[] bytes) {
-      this.bytes = bytes;
-    }
-
-    boolean containsThreadSleepMethodRef() {
-      if (readU4() != CLASSFILE_MAGIC) {
-        throw new IllegalArgumentException("not a class file");
-      }
-      skip(4); // minor_version, major_version
-
-      int constantPoolCount = readU2();
-      String[] utf8 = new String[constantPoolCount];
-      int[] classNameIndex = new int[constantPoolCount];
-      int[] nameAndTypeNameIndex = new int[constantPoolCount];
-      int[] nameAndTypeDescriptorIndex = new int[constantPoolCount];
-      int[] methodClassIndex = new int[constantPoolCount];
-      int[] methodNameAndTypeIndex = new int[constantPoolCount];
-
-      for (int i = 1; i < constantPoolCount; i++) {
-        int tag = readU1();
-        switch (tag) {
-          case CONSTANT_UTF8:
-            utf8[i] = readUtf8(readU2());
-            break;
-          case CONSTANT_INTEGER:
-          case CONSTANT_FLOAT:
-            skip(4);
-            break;
-          case CONSTANT_LONG:
-          case CONSTANT_DOUBLE:
-            skip(8);
-            i++;
-            break;
-          case CONSTANT_CLASS:
-            classNameIndex[i] = readU2();
-            break;
-          case CONSTANT_STRING:
-          case CONSTANT_METHOD_TYPE:
-          case CONSTANT_MODULE:
-          case CONSTANT_PACKAGE:
-            skip(2);
-            break;
-          case CONSTANT_FIELDREF:
-          case CONSTANT_INTERFACE_METHODREF:
-            skip(4);
-            break;
-          case CONSTANT_METHODREF:
-            methodClassIndex[i] = readU2();
-            methodNameAndTypeIndex[i] = readU2();
-            break;
-          case CONSTANT_NAME_AND_TYPE:
-            nameAndTypeNameIndex[i] = readU2();
-            nameAndTypeDescriptorIndex[i] = readU2();
-            break;
-          case CONSTANT_METHOD_HANDLE:
-            skip(3);
-            break;
-          case CONSTANT_DYNAMIC:
-          case CONSTANT_INVOKE_DYNAMIC:
-            skip(4);
-            break;
-          default:
-            throw new IllegalArgumentException("unknown constant-pool tag " + tag);
-        }
-      }
-
-      for (int i = 1; i < constantPoolCount; i++) {
-        int methodClass = methodClassIndex[i];
-        if (methodClass == 0) {
-          continue;
-        }
-        int methodNameAndType = methodNameAndTypeIndex[i];
-        String owner = utf8[classNameIndex[methodClass]];
-        String name = utf8[nameAndTypeNameIndex[methodNameAndType]];
-        String descriptor = utf8[nameAndTypeDescriptorIndex[methodNameAndType]];
-        if (THREAD_INTERNAL.equals(owner)
-            && SLEEP_NAME.equals(name)
-            && isThreadSleepDescriptor(descriptor)) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    private int readU1() {
-      require(1);
-      return bytes[offset++] & 0xFF;
-    }
-
-    private int readU2() {
-      require(2);
-      int value = ((bytes[offset] & 0xFF) << 8) | (bytes[offset + 1] & 0xFF);
-      offset += 2;
-      return value;
-    }
-
-    private int readU4() {
-      require(4);
-      int value =
-          ((bytes[offset] & 0xFF) << 24)
-              | ((bytes[offset + 1] & 0xFF) << 16)
-              | ((bytes[offset + 2] & 0xFF) << 8)
-              | (bytes[offset + 3] & 0xFF);
-      offset += 4;
-      return value;
-    }
-
-    private String readUtf8(int length) {
-      require(length);
-      String value;
-      try {
-        value = new String(bytes, offset, length, "UTF-8");
-      } catch (Exception e) {
-        throw new IllegalArgumentException(e);
-      }
-      offset += length;
-      return value;
-    }
-
-    private void skip(int length) {
-      require(length);
-      offset += length;
-    }
-
-    private void require(int length) {
-      if (offset + length > bytes.length) {
-        throw new IllegalArgumentException("truncated class file");
-      }
-    }
   }
 }

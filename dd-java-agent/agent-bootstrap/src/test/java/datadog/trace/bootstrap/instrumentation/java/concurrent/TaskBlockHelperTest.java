@@ -1,6 +1,5 @@
 package datadog.trace.bootstrap.instrumentation.java.concurrent;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -40,26 +39,15 @@ class TaskBlockHelperTest {
   void capture_returnsNull_withoutProfilingContext() {
     AgentSpan span = mock(AgentSpan.class);
 
-    assertNull(TaskBlockHelper.capture(BLOCKER, null, span));
+    assertNull(TaskBlockHelper.capture(BLOCKER, null, span, false));
   }
 
   @Test
-  void capture_recordsEntryTimingWithoutActiveSpan() {
+  void capture_returnsNull_nonDeferredHasNoLiveProductionPath() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     when(profiling.getCurrentTicks()).thenReturn(START_TICKS);
 
-    long before = System.nanoTime();
-    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, null);
-    long after = System.nanoTime();
-
-    assertNotNull(state);
-    assertEquals(profiling, state.profiling);
-    assertEquals(START_TICKS, state.startTicks);
-    assertTrue(state.startNanos >= before, "startNanos should be captured after `before`");
-    assertTrue(state.startNanos <= after, "startNanos should be captured before `after`");
-    assertEquals(BLOCKER, state.blocker);
-    assertEquals(0L, state.spanId);
-    assertEquals(0L, state.rootSpanId);
+    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, null, false));
   }
 
   @Test
@@ -67,9 +55,9 @@ class TaskBlockHelperTest {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     AgentSpan nonProfilerSpan = mock(AgentSpan.class);
     AgentSpanContext nonProfilerCtx = mock(AgentSpanContext.class);
-    when(nonProfilerSpan.context()).thenReturn(nonProfilerCtx);
+    when(nonProfilerSpan.spanContext()).thenReturn(nonProfilerCtx);
 
-    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, nonProfilerSpan));
+    assertNull(TaskBlockHelper.capture(BLOCKER, profiling, nonProfilerSpan, false));
   }
 
   @Test
@@ -77,10 +65,10 @@ class TaskBlockHelperTest {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(ctx);
+    when(span.spanContext()).thenReturn(ctx);
     when(ctx.getSpanId()).thenReturn(SPAN_ID);
 
-    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span);
+    TaskBlockHelper.State state = TaskBlockHelper.capture(BLOCKER, profiling, span, false);
 
     assertNull(state);
     verify(profiling, never()).getCurrentTicks();
@@ -91,7 +79,7 @@ class TaskBlockHelperTest {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
     AgentSpan span = mock(AgentSpan.class);
     ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(ctx);
+    when(span.spanContext()).thenReturn(ctx);
     when(ctx.getSpanId()).thenReturn(SPAN_ID);
     when(ctx.getRootSpanId()).thenReturn(ROOT_SPAN_ID);
 
@@ -162,17 +150,6 @@ class TaskBlockHelperTest {
   }
 
   @Test
-  void captureSafely_returnsNullWhenEntryCaptureThrows() {
-    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    AgentSpan span = mock(AgentSpan.class);
-    ProfilerSpanContext ctx = mock(ProfilerSpanContext.class);
-    when(span.context()).thenReturn(ctx);
-    when(profiling.getCurrentTicks()).thenThrow(new RuntimeException("boom"));
-
-    assertNull(TaskBlockHelper.captureSafely(BLOCKER, profiling, span));
-  }
-
-  @Test
   void finish_ignoresNullState() {
     ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
 
@@ -187,7 +164,7 @@ class TaskBlockHelperTest {
     // startNanos far in the future so (now - startNanos) is negative and below threshold
     TaskBlockHelper.State state =
         new TaskBlockHelper.State(
-            profiling, START_TICKS, System.nanoTime() + 60_000_000_000L, BLOCKER);
+            profiling, START_TICKS, System.nanoTime() + 60_000_000_000L, BLOCKER, true, 0L, 0L, 0L);
 
     TaskBlockHelper.finish(state);
 
@@ -214,22 +191,6 @@ class TaskBlockHelperTest {
     verify(profiling, never())
         .enqueueTaskBlock(
             anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyInt());
-  }
-
-  @Test
-  void finish_emitsTaskBlockForEligibleInterval() {
-    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    TaskBlockHelper.State state =
-        new TaskBlockHelper.State(
-            profiling,
-            START_TICKS,
-            System.nanoTime() - 2 * TaskBlockHelper.MIN_TASK_BLOCK_NANOS,
-            BLOCKER);
-
-    TaskBlockHelper.finish(state);
-
-    // Span ids are no longer passed across JNI; the native side reads them from OTEP TLS.
-    verify(profiling).recordTaskBlock(START_TICKS, BLOCKER, 0L);
   }
 
   @Test
@@ -308,22 +269,6 @@ class TaskBlockHelperTest {
             eq(suppressedSampleCount),
             eq(ProfilingContextIntegration.BLOCKING_STATE_SLEEPING));
     verify(profiling).blockExit(eq(BLOCK_TOKEN), any(long[].class));
-  }
-
-  @Test
-  void finish_swallowsProfilerFailures() {
-    ProfilingContextIntegration profiling = mock(ProfilingContextIntegration.class);
-    TaskBlockHelper.State state =
-        new TaskBlockHelper.State(
-            profiling,
-            START_TICKS,
-            System.nanoTime() - 2 * TaskBlockHelper.MIN_TASK_BLOCK_NANOS,
-            BLOCKER);
-    org.mockito.Mockito.doThrow(new RuntimeException("boom"))
-        .when(profiling)
-        .recordTaskBlock(START_TICKS, BLOCKER, 0L);
-
-    assertDoesNotThrow(() -> TaskBlockHelper.finish(state));
   }
 
   private static boolean hasVirtualThreads() {

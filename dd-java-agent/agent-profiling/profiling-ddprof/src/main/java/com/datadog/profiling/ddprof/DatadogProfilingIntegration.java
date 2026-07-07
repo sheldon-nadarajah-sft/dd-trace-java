@@ -8,7 +8,6 @@ import datadog.trace.api.profiling.Timing;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
-import java.math.BigInteger;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,9 +37,6 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   // Thread.sleep instrumentation lazily resolves it without calling onAttach(), because onAttach()
   // also changes wall-clock thread filtering state.
   private static final ThreadLocal<Integer> NATIVE_TID = new ThreadLocal<>();
-
-  private static final BigInteger NANOS_PER_SECOND = BigInteger.valueOf(1_000_000_000L);
-  private static final BigInteger LONG_MAX_VALUE = BigInteger.valueOf(Long.MAX_VALUE);
 
   // Bounded queue for deferred TaskBlock events. offer() is non-blocking; a full queue drops events
   // and increments DROPPED_TASK_BLOCKS for diagnostics.
@@ -185,28 +181,8 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
         if (entry == null) {
           continue;
         }
-        int tid = (int) entry[0];
-        long startTicks = entry[1];
-        long durationNanos = entry[2];
-        long blocker = entry[3];
-        long spanId = entry[4];
-        long rootSpanId = entry[5];
-        long anchorSampleId = entry.length > 6 ? entry[6] : 0L;
-        long suppressedSampleCount = entry.length > 7 ? entry[7] : 0L;
-        int observedBlockingState = entry.length > 8 ? (int) entry[8] : 0;
-        long freq = TSC_FREQUENCY;
-        long endTicks = saturatingAdd(startTicks, nanosToTicks(durationNanos, freq));
-        DDPROF.recordTaskBlockFromContextEvent(
-            tid,
-            startTicks,
-            endTicks,
-            blocker,
-            0L,
-            spanId,
-            rootSpanId,
-            anchorSampleId,
-            suppressedSampleCount,
-            observedBlockingState);
+        TaskBlockDrain.drainTaskBlockEntry(
+            entry, TSC_FREQUENCY, DDPROF::recordTaskBlockFromContextEvent);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
@@ -222,27 +198,6 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   }
 
   @Override
-  public int encode(CharSequence constant) {
-    return DDPROF.encode(constant);
-  }
-
-  @Override
-  public int encodeOperationName(CharSequence constant) {
-    if (SPAN_NAME_INDEX >= 0) {
-      return DDPROF.encode(constant);
-    }
-    return 0;
-  }
-
-  @Override
-  public int encodeResourceName(CharSequence constant) {
-    if (RESOURCE_NAME_INDEX >= 0) {
-      return DDPROF.encode(constant);
-    }
-    return 0;
-  }
-
-  @Override
   public String name() {
     return "ddprof";
   }
@@ -250,11 +205,6 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
   @Override
   public long getCurrentTicks() {
     return DDPROF.getCurrentTicks();
-  }
-
-  @Override
-  public void recordTaskBlock(long startTicks, long blocker, long unblockingSpanId) {
-    DDPROF.recordTaskBlockEvent(startTicks, blocker, unblockingSpanId);
   }
 
   @Override
@@ -332,42 +282,5 @@ public class DatadogProfilingIntegration implements ProfilingContextIntegration 
 
   static long droppedTaskBlocks() {
     return DROPPED_TASK_BLOCKS.get();
-  }
-
-  private static long nanosToTicks(long durationNanos, long frequency) {
-    if (durationNanos <= 0L || frequency <= 0L) {
-      return 0L;
-    }
-    long seconds = durationNanos / 1_000_000_000L;
-    long nanos = durationNanos % 1_000_000_000L;
-    return saturatingAdd(
-        saturatingMultiply(seconds, frequency), fractionalNanosToTicks(nanos, frequency));
-  }
-
-  private static long fractionalNanosToTicks(long nanos, long frequency) {
-    if (nanos == 0L) {
-      return 0L;
-    }
-    return BigInteger.valueOf(nanos)
-        .multiply(BigInteger.valueOf(frequency))
-        .divide(NANOS_PER_SECOND)
-        .min(LONG_MAX_VALUE)
-        .longValue();
-  }
-
-  private static long saturatingMultiply(long left, long right) {
-    try {
-      return Math.multiplyExact(left, right);
-    } catch (ArithmeticException ignored) {
-      return Long.MAX_VALUE;
-    }
-  }
-
-  private static long saturatingAdd(long left, long right) {
-    long result = left + right;
-    if (((left ^ result) & (right ^ result)) < 0L) {
-      return Long.MAX_VALUE;
-    }
-    return result;
   }
 }

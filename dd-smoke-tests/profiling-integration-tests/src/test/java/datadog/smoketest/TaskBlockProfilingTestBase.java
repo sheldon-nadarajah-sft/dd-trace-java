@@ -183,6 +183,11 @@ abstract class TaskBlockProfilingTestBase<S> {
     return null; // unparseable — skipped, not fatal
   }
 
+  /**
+   * Checks the forked process log for a classloading/rewrite failure. Always checks {@code
+   * NoClassDefFoundError}; {@code additionalMarkers} lets subclasses match their specific
+   * instrumentation-failure message.
+   */
   protected boolean logHasInstrumentationError(String... additionalMarkers) throws IOException {
     String log = new String(Files.readAllBytes(logFilePath), StandardCharsets.UTF_8);
     if (log.contains("NoClassDefFoundError")) {
@@ -196,7 +201,7 @@ abstract class TaskBlockProfilingTestBase<S> {
     return false;
   }
 
-  private Path extractLastJfrStream(Path path) throws IOException {
+  Path extractLastJfrStream(Path path) throws IOException {
     byte[] data = Files.readAllBytes(path);
     int lastMagic = lastIndexOf(data, JFR_MAGIC);
     if (lastMagic <= 0) {
@@ -208,7 +213,7 @@ abstract class TaskBlockProfilingTestBase<S> {
     return extracted;
   }
 
-  private static int lastIndexOf(byte[] data, byte[] needle) {
+  static int lastIndexOf(byte[] data, byte[] needle) {
     for (int i = data.length - needle.length; i >= 0; i--) {
       boolean match = true;
       for (int j = 0; j < needle.length; j++) {
