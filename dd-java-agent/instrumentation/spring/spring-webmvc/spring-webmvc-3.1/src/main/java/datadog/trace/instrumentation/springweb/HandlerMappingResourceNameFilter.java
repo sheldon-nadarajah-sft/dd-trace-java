@@ -25,6 +25,7 @@ import org.springframework.web.servlet.mvc.method.RequestMappingInfoHandlerMappi
 public class HandlerMappingResourceNameFilter extends OncePerRequestFilter implements Ordered {
 
   private static final Logger log = LoggerFactory.getLogger(HandlerMappingResourceNameFilter.class);
+
   private final List<HandlerMapping> handlerMappings = new CopyOnWriteArrayList<>();
 
   @Override
